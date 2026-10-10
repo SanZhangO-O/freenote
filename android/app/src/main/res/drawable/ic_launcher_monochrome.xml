@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Android 13+ 主题图标：单色剪影，正文线用 evenOdd 挖空 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M42,28h24a6,6 0 0 1 6,6v34l-12,12h-18a6,6 0 0 1 -6,-6v-40a6,6 0 0 1 6,-6zM45,41h18v4h-18zM45,52h18v4h-18zM45,63h12v4h-12z" />
+</vector>

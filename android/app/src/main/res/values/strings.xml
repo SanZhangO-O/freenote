@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">FreeNote</string>
+    <string name="shortcut_new_note_short">新建便签</string>
+    <string name="shortcut_new_note_long">快速新建便签</string>
+</resources>

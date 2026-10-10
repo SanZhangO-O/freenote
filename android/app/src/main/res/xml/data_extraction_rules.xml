@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+   数据提取规则（API 31+）：云端备份与设备迁移均排除数据库，
+   避免锁定便签的密文离开设备。便签迁移请使用设置中的 JSON 导出/导入。
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="database" path="freenote_database" />
+        <exclude domain="database" path="freenote_database-wal" />
+        <exclude domain="database" path="freenote_database-shm" />
+        <!-- 同步凭据（已用 Keystore 加密，换机后密钥不可用）：不随备份迁移 -->
+        <exclude domain="sharedpref" path="freenote_sync.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="database" path="freenote_database" />
+        <exclude domain="database" path="freenote_database-wal" />
+        <exclude domain="database" path="freenote_database-shm" />
+        <exclude domain="sharedpref" path="freenote_sync.xml" />
+    </device-transfer>
+</data-extraction-rules>

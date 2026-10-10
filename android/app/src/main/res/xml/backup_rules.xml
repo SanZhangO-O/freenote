@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+   备份规则（API < 31 的自动备份）：排除数据库，防止加密便签密文被云端/PC 备份导出。
+   便签迁移请使用设置中的 JSON 导出/导入。
+-->
+<full-backup-content>
+    <exclude domain="database" path="freenote_database" />
+    <exclude domain="database" path="freenote_database-wal" />
+    <exclude domain="database" path="freenote_database-shm" />
+    <!-- 同步凭据（已用 Keystore 加密，换机后密钥不可用）：不随备份迁移 -->
+    <exclude domain="sharedpref" path="freenote_sync.xml" />
+</full-backup-content>

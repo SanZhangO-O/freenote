@@ -1,0 +1,28 @@
+# IDE / 编辑器
+.idea/
+.vscode/
+.kilo/
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Android 构建产物（子目录另有 .gitignore，这里兜底）
+.gradle/
+.kotlin/
+local.properties
+build/
+captures/
+
+# 运行时数据 / 数据库（勿提交，可能含个人便签数据）
+*.db
+*.db-wal
+*.db-shm
+
+# 按机器隔离的运行时配置
+user_settings.json

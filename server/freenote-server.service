@@ -1,0 +1,17 @@
+[Unit]
+Description=FreeNote Sync Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/freenote-server
+ExecStart=/opt/freenote-server/.venv/bin/uvicorn freenote_server.app:app --host 127.0.0.1 --port 8000
+Environment=FREENOTE_SERVER_DB=/opt/freenote-server/data/freenote.db
+Restart=always
+RestartSec=3
+# 可选：使用低权限用户运行
+# User=freenote
+# Group=freenote
+
+[Install]
+WantedBy=multi-user.target

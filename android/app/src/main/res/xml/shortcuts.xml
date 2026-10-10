@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutId="new_note"
+        android:shortcutLongLabel="@string/shortcut_new_note_long"
+        android:shortcutShortLabel="@string/shortcut_new_note_short">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetClass="com.zqr.freenote.MainActivity"
+            android:targetPackage="com.zqr.freenote">
+            <extra
+                android:name="com.zqr.freenote.extra.OPEN_NEW"
+                android:value="true" />
+        </intent>
+    </shortcut>
+</shortcuts>
