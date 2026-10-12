@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Sync
@@ -23,6 +24,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -31,13 +33,17 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.zqr.freenote.data.sync.ServerUrl
 import com.zqr.freenote.data.sync.SyncManager
+import com.zqr.freenote.data.sync.SyncPeer
 import com.zqr.freenote.data.sync.SyncSettings
 import com.zqr.freenote.util.TimeFormat
 import kotlinx.coroutines.launch
@@ -74,14 +80,82 @@ fun SyncSection(onMessage: (String) -> Unit) {
 
     var serverUrl by remember { mutableStateOf(config.serverUrl) }
     var username by remember { mutableStateOf(config.username) }
+    // 文本字段用本地状态、失焦/键盘完成后才写入设置：避免边打字边切换同步账户、
+    // 边打字边重启 P2P 服务（改到一半立即生效是误操作的常见来源）
+    var deviceNameText by remember { mutableStateOf(config.deviceName) }
+    var passphraseText by remember { mutableStateOf(config.passphrase) }
+    var accountText by remember { mutableStateOf(config.p2pAccount) }
     var password by remember { mutableStateOf("") }
     var busBusy by remember { mutableStateOf(false) }
     var manualAddress by remember { mutableStateOf("") }
     var intervalText by remember { mutableStateOf(config.syncIntervalMin.toString()) }
     var showChangePasswordDialog by remember { mutableStateOf(false) }
     var showDeleteAccountDialog by remember { mutableStateOf(false) }
+    var showGeneratePassphraseDialog by remember { mutableStateOf(false) }
+    var showGenerateAccountDialog by remember { mutableStateOf(false) }
+    var showLogoutDialog by remember { mutableStateOf(false) }
+    var peerToRemove by remember { mutableStateOf<SyncPeer?>(null) }
+    val focusManager = LocalFocusManager.current
+    val textFieldOptions = KeyboardOptions(imeAction = ImeAction.Done)
+    val commitOnDone = KeyboardActions(onDone = { focusManager.clearFocus() })
     var portText by remember {
         mutableStateOf(if (config.syncPort > 0) config.syncPort.toString() else "")
+    }
+
+    fun commitDeviceName() {
+        val value = deviceNameText.trim()
+        if (value != config.deviceName && value.isNotEmpty()) {
+            SyncSettings.setDeviceName(value)
+            SyncManager.announceSoon()
+        }
+    }
+
+    fun commitPassphrase() {
+        val value = passphraseText.trim()
+        if (value != config.passphrase) {
+            SyncSettings.setPassphrase(value)
+            SyncManager.onConfigChanged()
+        }
+    }
+
+    fun commitAccount() {
+        val value = accountText.trim()
+        if (value != config.p2pAccount) {
+            SyncSettings.setP2pAccount(value)
+            SyncManager.onConfigChanged()
+        }
+    }
+
+    fun commitServerFields() {
+        val url = serverUrl.trim().trimEnd('/')
+        val user = username.trim()
+        if (ServerUrl.normalize(url) != ServerUrl.normalize(config.serverUrl) ||
+            user != config.username
+        ) {
+            SyncSettings.setServerUrl(url)
+            SyncSettings.setUsername(user)
+            SyncManager.onConfigChanged()
+        }
+    }
+
+    fun commitPort() {
+        val value = (portText.toIntOrNull() ?: 0).coerceIn(0, 65535)
+        if (value != config.syncPort) {
+            SyncSettings.setSyncPort(value)
+            SyncManager.onConfigChanged()
+        }
+    }
+
+    // 离开设置页（返回/旋转）时把仍聚焦、尚未失焦的文本框内容落盘：
+    // 改完直接返回不应丢失；各 commit 内部有「无变化不写」保护，可安全重复调用
+    DisposableEffect(Unit) {
+        onDispose {
+            commitDeviceName()
+            commitPassphrase()
+            commitAccount()
+            commitServerFields()
+            commitPort()
+        }
     }
 
     Column(modifier = Modifier.fillMaxWidth()) {
@@ -136,71 +210,71 @@ fun SyncSection(onMessage: (String) -> Unit) {
         Spacer(Modifier.height(8.dp))
         val p2pReady = config.p2pEnabled
         OutlinedTextField(
-            value = config.deviceName,
-            onValueChange = {
-                SyncSettings.setDeviceName(it)
-                SyncManager.announceSoon()
-            },
+            value = deviceNameText,
+            onValueChange = { deviceNameText = it },
             label = { Text("设备名称") },
             singleLine = true,
             enabled = p2pReady,
-            modifier = Modifier.fillMaxWidth()
+            keyboardOptions = textFieldOptions,
+            keyboardActions = commitOnDone,
+            modifier = Modifier
+                .fillMaxWidth()
+                .onFocusChanged { if (!it.isFocused) commitDeviceName() }
         )
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(
-            value = config.passphrase,
-            onValueChange = {
-                SyncSettings.setPassphrase(it)
-                SyncManager.onConfigChanged()
-            },
+            value = passphraseText,
+            onValueChange = { passphraseText = it },
             label = { Text("同步口令") },
             placeholder = { Text("同一口令的设备才会互相发现并同步") },
             singleLine = true,
             enabled = p2pReady,
-            modifier = Modifier.fillMaxWidth()
+            keyboardOptions = textFieldOptions,
+            keyboardActions = commitOnDone,
+            modifier = Modifier
+                .fillMaxWidth()
+                .onFocusChanged { if (!it.isFocused) commitPassphrase() }
         )
         Spacer(Modifier.height(4.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = {
-                SyncSettings.setPassphrase(generatePassphrase())
-                SyncManager.onConfigChanged()
-                onMessage("已生成新口令，请在另一台设备上填写相同口令")
+                // 更换口令=更换全组共享凭据：先确认，误触会让其他设备立即失联
+                showGeneratePassphraseDialog = true
             }, enabled = p2pReady) { Text("生成随机口令") }
             TextButton(onClick = {
-                if (config.passphrase.isBlank()) {
+                if (passphraseText.isBlank()) {
                     onMessage("口令为空，无法复制")
                 } else {
-                    clipboard.setText(AnnotatedString(config.passphrase))
+                    clipboard.setText(AnnotatedString(passphraseText.trim()))
                     onMessage("同步口令已复制到剪贴板")
                 }
             }, enabled = p2pReady) { Text("复制") }
         }
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(
-            value = config.p2pAccount,
-            onValueChange = {
-                SyncSettings.setP2pAccount(it)
-                SyncManager.onConfigChanged()
-            },
+            value = accountText,
+            onValueChange = { accountText = it },
             label = { Text("离线账户") },
             placeholder = { Text("未登录服务器时用于区分同步组（两端需一致）") },
             supportingText = { Text("生成 UUID 复制到其他设备即可同组，无需注册服务器账号") },
             singleLine = true,
             enabled = p2pReady,
-            modifier = Modifier.fillMaxWidth()
+            keyboardOptions = textFieldOptions,
+            keyboardActions = commitOnDone,
+            modifier = Modifier
+                .fillMaxWidth()
+                .onFocusChanged { if (!it.isFocused) commitAccount() }
         )
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = {
-                val account = UUID.randomUUID().toString()
-                SyncSettings.setP2pAccount(account)
-                SyncManager.onConfigChanged()
-                onMessage("已生成 UUID 离线账户：复制到其他设备即可同组（无需注册服务器账号）")
+                // 更换离线账户=切换同步组：先确认，避免误触后设备列表被重置
+                showGenerateAccountDialog = true
             }, enabled = p2pReady) { Text("生成 UUID") }
             TextButton(onClick = {
-                if (config.p2pAccount.isBlank()) {
+                if (accountText.isBlank()) {
                     onMessage("离线账户为空，无法复制")
                 } else {
-                    clipboard.setText(AnnotatedString(config.p2pAccount))
+                    clipboard.setText(AnnotatedString(accountText.trim()))
                     onMessage("离线账户已复制到剪贴板")
                 }
             }, enabled = p2pReady) { Text("复制") }
@@ -260,18 +334,17 @@ fun SyncSection(onMessage: (String) -> Unit) {
             OutlinedTextField(
                 value = portText,
                 onValueChange = { text ->
+                    // 只更新本地文本：逐个数字就重启监听会让端口短暂处于错误值
                     portText = text.filter { it.isDigit() }.take(5)
-                    val value = portText.toIntOrNull() ?: 0
-                    if (value <= 65535) {
-                        SyncSettings.setSyncPort(value)
-                        SyncManager.onConfigChanged()
-                    }
                 },
                 suffix = { Text("0=自动") },
                 singleLine = true,
                 enabled = p2pReady,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier.width(150.dp)
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() }),
+                modifier = Modifier
+                    .width(150.dp)
+                    .onFocusChanged { if (!it.isFocused) commitPort() }
             )
         }
         Text(
@@ -315,7 +388,7 @@ fun SyncSection(onMessage: (String) -> Unit) {
                     TextButton(onClick = {
                         scope.launch { onMessage(SyncManager.syncPeer(peer.id)) }
                     }, enabled = p2pReady) { Text("同步") }
-                    TextButton(onClick = { SyncManager.forgetPeer(peer.id) }, enabled = p2pReady) { Text("移除") }
+                    TextButton(onClick = { peerToRemove = peer }, enabled = p2pReady) { Text("移除") }
                 }
             }
         }
@@ -347,28 +420,28 @@ fun SyncSection(onMessage: (String) -> Unit) {
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(
             value = serverUrl,
-            onValueChange = {
-                serverUrl = it
-                SyncSettings.setServerUrl(it)
-                SyncManager.onConfigChanged()
-            },
+            onValueChange = { serverUrl = it },
             label = { Text("服务器地址") },
             placeholder = { Text("http://192.168.1.8:8000") },
             singleLine = true,
-            modifier = Modifier.fillMaxWidth()
+            keyboardOptions = textFieldOptions,
+            keyboardActions = commitOnDone,
+            modifier = Modifier
+                .fillMaxWidth()
+                .onFocusChanged { if (!it.isFocused) commitServerFields() }
         )
         Spacer(Modifier.height(8.dp))
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(
                 value = username,
-                onValueChange = {
-                    username = it
-                    SyncSettings.setUsername(it)
-                    SyncManager.onConfigChanged()
-                },
+                onValueChange = { username = it },
                 label = { Text("用户名") },
                 singleLine = true,
-                modifier = Modifier.weight(1f)
+                keyboardOptions = textFieldOptions,
+                keyboardActions = commitOnDone,
+                modifier = Modifier
+                    .weight(1f)
+                    .onFocusChanged { if (!it.isFocused) commitServerFields() }
             )
             Spacer(Modifier.width(8.dp))
             OutlinedTextField(
@@ -389,12 +462,7 @@ fun SyncSection(onMessage: (String) -> Unit) {
         ) {
             if (config.serverReady) {
                 OutlinedButton(
-                    onClick = {
-                        scope.launch {
-                            SyncManager.logout()
-                            onMessage("已退出登录")
-                        }
-                    }
+                    onClick = { showLogoutDialog = true }
                 ) { Text("退出登录") }
                 OutlinedButton(onClick = { showChangePasswordDialog = true }) { Text("修改密码") }
                 OutlinedButton(onClick = { showDeleteAccountDialog = true }) { Text("注销账号") }
@@ -501,6 +569,80 @@ fun SyncSection(onMessage: (String) -> Unit) {
                     }
                 },
                 onDismiss = { showDeleteAccountDialog = false }
+            )
+        }
+        if (showLogoutDialog) {
+            AlertDialog(
+                onDismissRequest = { showLogoutDialog = false },
+                title = { Text("退出登录") },
+                text = { Text("退出后本机将停止服务器自动同步，需要重新登录才能继续（本机便签数据保留）。") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        showLogoutDialog = false
+                        scope.launch {
+                            SyncManager.logout()
+                            onMessage("已退出登录")
+                        }
+                    }) { Text("退出") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showLogoutDialog = false }) { Text("取消") }
+                }
+            )
+        }
+        if (showGeneratePassphraseDialog) {
+            AlertDialog(
+                onDismissRequest = { showGeneratePassphraseDialog = false },
+                title = { Text("生成随机口令？") },
+                text = { Text("将立即替换当前同步口令：其他设备必须改用新口令，否则无法再发现/同步本机。") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        showGeneratePassphraseDialog = false
+                        passphraseText = generatePassphrase()
+                        SyncSettings.setPassphrase(passphraseText)
+                        SyncManager.onConfigChanged()
+                        onMessage("已生成新口令，请在另一台设备上填写相同口令")
+                    }) { Text("生成") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showGeneratePassphraseDialog = false }) { Text("取消") }
+                }
+            )
+        }
+        if (showGenerateAccountDialog) {
+            AlertDialog(
+                onDismissRequest = { showGenerateAccountDialog = false },
+                title = { Text("生成 UUID 离线账户？") },
+                text = { Text("将立即替换当前离线账户：其他设备需要填写相同账户才能同组同步。") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        showGenerateAccountDialog = false
+                        accountText = UUID.randomUUID().toString()
+                        SyncSettings.setP2pAccount(accountText)
+                        SyncManager.onConfigChanged()
+                        onMessage("已生成 UUID 离线账户：复制到其他设备即可同组（无需注册服务器账号）")
+                    }) { Text("生成") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showGenerateAccountDialog = false }) { Text("取消") }
+                }
+            )
+        }
+        peerToRemove?.let { peer ->
+            AlertDialog(
+                onDismissRequest = { peerToRemove = null },
+                title = { Text("移除设备？") },
+                text = { Text("从设备列表中移除「${peer.displayName()}」？（之后可重新发现或手动添加）") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        peerToRemove = null
+                        SyncManager.forgetPeer(peer.id)
+                        onMessage("已移除设备「${peer.displayName()}」")
+                    }) { Text("移除", color = MaterialTheme.colorScheme.error) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { peerToRemove = null }) { Text("取消") }
+                }
             )
         }
     }

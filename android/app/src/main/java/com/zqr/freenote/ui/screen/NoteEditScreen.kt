@@ -49,6 +49,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -58,6 +61,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -91,6 +95,7 @@ import com.zqr.freenote.ui.components.NoteEditTopBar
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -105,6 +110,13 @@ fun NoteEditScreen(
     val context = LocalContext.current
     val folderPaths by editViewModel.availableFolders.collectAsState()
     var showFolderPicker by remember { mutableStateOf(false) }
+
+    // 清单项删除的「撤销」Snackbar（自动保存会很快落库，撤销是唯一的即时恢复入口）
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+
+    // 待确认恢复的历史版本：单击列表项改为「选中 + 确认」，避免浏览时误触覆盖当前内容
+    var pendingRestoreHistoryId by remember { mutableStateOf<Long?>(null) }
 
     // 保存完成后的导航回调由界面挂载：旋转重建后仍指向当前 NavController
     DisposableEffect(Unit) {
@@ -207,6 +219,7 @@ fun NoteEditScreen(
     }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             NoteEditTopBar(
                 screenTitle = if (noteId == null) "新建便签" else "编辑便签",
@@ -361,7 +374,23 @@ fun NoteEditScreen(
                     onContentChange = { state.onContentChange(it) },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp)
+                        .padding(horizontal = 16.dp),
+                    onItemDeleted = { previous, deleted ->
+                        scope.launch {
+                            val result = snackbarHostState.showSnackbar(
+                                message = "已删除清单项",
+                                actionLabel = "撤销"
+                            )
+                            if (result == SnackbarResult.ActionPerformed) {
+                                // 只有内容仍是删除后的状态才恢复，避免把之后的新编辑一起回滚
+                                if (state.content == deleted) {
+                                    state.onContentChange(previous)
+                                } else {
+                                    snackbarHostState.showSnackbar("内容已变化，未撤销删除")
+                                }
+                            }
+                        }
+                    }
                 )
             } else if (state.previewMode) {
                 MarkdownText(
@@ -534,7 +563,8 @@ fun NoteEditScreen(
                     LazyColumn(modifier = Modifier.heightIn(max = 360.dp)) {
                         items(state.historyVersions, key = { it.historyId }) { version ->
                             TextButton(
-                                onClick = { state.restoreVersion(version.historyId) },
+                                // 单击只选中，经确认后才覆盖当前内容（浏览时误触不会立即恢复）
+                                onClick = { pendingRestoreHistoryId = version.historyId },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Column(modifier = Modifier.fillMaxWidth()) {
@@ -565,6 +595,39 @@ fun NoteEditScreen(
             },
             confirmButton = {
                 TextButton(onClick = { state.dismissHistoryDialog() }) { Text("关闭") }
+            }
+        )
+    }
+
+    pendingRestoreHistoryId?.let { historyId ->
+        AlertDialog(
+            onDismissRequest = { pendingRestoreHistoryId = null },
+            title = { Text("恢复此版本？") },
+            text = { Text("将用该历史版本覆盖当前内容（当前内容会先存入历史，可再恢复回来）。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingRestoreHistoryId = null
+                    state.restoreVersion(historyId)
+                }) { Text("恢复") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingRestoreHistoryId = null }) { Text("取消") }
+            }
+        )
+    }
+
+    if (state.showEmptyDiscardDialog) {
+        AlertDialog(
+            onDismissRequest = { state.cancelEmptyDiscard() },
+            title = { Text("放弃这条便签？") },
+            text = { Text("便签没有正文内容，返回将放弃已设置的标签、颜色、置顶等更改。") },
+            confirmButton = {
+                TextButton(onClick = { state.confirmEmptyDiscard(onNavigateBack) }) {
+                    Text("放弃", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { state.cancelEmptyDiscard() }) { Text("继续编辑") }
             }
         )
     }
@@ -727,8 +790,9 @@ private fun TagInputRow(
                         label = { Text("#$tag") },
                         trailingIcon = {
                             Box(
+                                // 触控区从 28dp 放大到 40dp：chip 紧贴文字，小 ✕ 极易在点标签时误触删除
                                 modifier = Modifier
-                                    .size(28.dp)
+                                    .size(40.dp)
                                     .clickable {
                                         tags.remove(tag)
                                         onTagsChanged()
@@ -738,7 +802,7 @@ private fun TagInputRow(
                                 Icon(
                                     Icons.Filled.Close,
                                     contentDescription = "移除标签",
-                                    modifier = Modifier.size(14.dp)
+                                    modifier = Modifier.size(16.dp)
                                 )
                             }
                         },

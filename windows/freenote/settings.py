@@ -124,6 +124,8 @@ def try_unprotect_secret(value: str) -> tuple[bool, str]:
 _DEFAULTS = {
     "theme": THEME_SYSTEM,
     "pin_hash": None,
+    # 全局热键 Ctrl+Alt+N 新建便签（可在设置中关闭，避免与其他程序冲突/误触）
+    "hotkey_enabled": True,
     "device_id": "",
     "device_name": "",
     "group_passphrase": "",
@@ -259,6 +261,16 @@ class Settings:
     @pin_hash.setter
     def pin_hash(self, value: str | None) -> None:
         self.set("pin_hash", value)
+
+    # ------------------------------------------------------------------ 全局热键
+
+    @property
+    def hotkey_enabled(self) -> bool:
+        return bool(self.get("hotkey_enabled", True))
+
+    @hotkey_enabled.setter
+    def hotkey_enabled(self, value: bool) -> None:
+        self.set("hotkey_enabled", bool(value))
 
     # ------------------------------------------------------------------ P2P
 

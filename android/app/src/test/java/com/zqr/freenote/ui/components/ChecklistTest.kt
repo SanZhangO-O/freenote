@@ -105,4 +105,19 @@ class ChecklistTest {
         val image = "file:///data/user/0/com.zqr.freenote/files/note_images/a1.jpg"
         assertEquals("![]($image)", markdownToChecklist("- [ ] ![]($image)"))
     }
+
+    @Test
+    fun lossDetectionCoversBlankLinesIndentAndInlineMarkup() {
+        // 无 Markdown 标记但含空行/缩进：转换会丢格式，必须提示
+        assertTrue(markdownToChecklistLosesMarkup("第一段\n\n第二段"))
+        assertTrue(markdownToChecklistLosesMarkup("  缩进行"))
+        assertTrue(markdownToChecklistLosesMarkup("末尾带空格 "))
+        // 行首标记与行内标记同样算有损
+        assertTrue(markdownToChecklistLosesMarkup("标题\n- 项目"))
+        assertTrue(markdownToChecklistLosesMarkup("*斜体* 文本"))
+        assertTrue(markdownToChecklistLosesMarkup("`代码` 文本"))
+        // 逐行纯文本且无空行/缩进：转换无损，不应弹确认
+        assertFalse(markdownToChecklistLosesMarkup("苹果\n香蕉"))
+        assertFalse(markdownToChecklistLosesMarkup(""))
+    }
 }

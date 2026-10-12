@@ -332,7 +332,8 @@ fun SettingsScreen(
                 onClick = { exportLauncher.launch("freenote_backup.json") },
                 modifier = Modifier.fillMaxWidth()
             ) { Text("导出全部便签 (JSON)") }
-            Spacer(Modifier.height(8.dp))
+            // 导出/导入拉开间距：两个全宽按钮紧邻时容易把「导出」误点成「导入」
+            Spacer(Modifier.height(16.dp))
             OutlinedButton(
                 enabled = !backupRunning,
                 onClick = { importLauncher.launch(arrayOf("application/json", "*/*")) },

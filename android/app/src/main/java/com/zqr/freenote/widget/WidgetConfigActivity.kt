@@ -6,13 +6,16 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -91,6 +94,8 @@ private fun WidgetConfigScreen(onCancel: () -> Unit, onPick: (String) -> Unit) {
     val context = LocalContext.current
     var notes by remember { mutableStateOf<List<Note>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
+    // 单击只选中，需再点「确定」才应用：列表滑动中误点一行不会直接把小组件绑错便签
+    var selectedId by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) {
         notes = withContext(Dispatchers.IO) {
             runCatching {
@@ -111,9 +116,21 @@ private fun WidgetConfigScreen(onCancel: () -> Unit, onPick: (String) -> Unit) {
             notes.isEmpty() -> Text("暂无便签，先在应用内新建一条吧")
             else -> LazyColumn(modifier = Modifier.weight(1f)) {
                 items(notes, key = { it.id }) { note ->
-                    TextButton(onClick = { onPick(note.id) }, modifier = Modifier.fillMaxWidth()) {
+                    val selected = selectedId == note.id
+                    TextButton(
+                        onClick = { selectedId = note.id },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
                         Column(modifier = Modifier.fillMaxWidth()) {
-                            Text(note.title.ifBlank { "无标题" }, maxLines = 1)
+                            Text(
+                                (if (selected) "✓ " else "") + note.title.ifBlank { "无标题" },
+                                maxLines = 1,
+                                color = if (selected) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface
+                                }
+                            )
                             Text(
                                 if (note.isLocked) {
                                     "已加密便签"
@@ -135,6 +152,14 @@ private fun WidgetConfigScreen(onCancel: () -> Unit, onPick: (String) -> Unit) {
             }
         }
         Spacer(Modifier.height(8.dp))
-        OutlinedButton(onClick = onCancel, modifier = Modifier.fillMaxWidth()) { Text("取消") }
+        Row(modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f)) { Text("取消") }
+            Spacer(Modifier.width(8.dp))
+            Button(
+                onClick = { selectedId?.let(onPick) },
+                enabled = selectedId != null,
+                modifier = Modifier.weight(1f)
+            ) { Text("确定") }
+        }
     }
 }

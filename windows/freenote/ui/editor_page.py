@@ -533,6 +533,22 @@ class EditorPage(QWidget):
     def _on_checklist_toggled(self, checked: bool) -> None:
         if self._loading:
             return
+        if checked and self.plain_edit.toPlainText().strip():
+            # 文本转清单会按行重写正文：空行/缩进/Markdown 标记会被转换或移除，
+            # 且随自动保存立即落库无法撤销——先确认，取消时回退按钮状态
+            answer = QMessageBox.question(
+                self,
+                "切换为清单",
+                "切换为清单会按行重写正文：空行、缩进和 Markdown 标记（#、**、- 等）"
+                "会被转换或移除，并自动保存，无法撤销。\n\n继续切换？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                self._loading = True
+                self.checklist_button.setChecked(False)
+                self._loading = False
+                return
         self._is_checklist = checked
         if checked:
             self.checklist_editor.set_content(self.plain_edit.toPlainText())
@@ -674,13 +690,22 @@ class EditorPage(QWidget):
         if self._note_id is None:
             self.status_message.emit("新便签保存后才有历史版本")
             return
-        note = self.store.get(self._note_id)
+        note_id = self._note_id
+        note = self.store.get(note_id)
         if note is None:
             return
         dialog = HistoryDialog(self, self.store, note, self._theme, self._session.get_pin())
         if dialog.exec() == QDialog.DialogCode.Accepted and dialog.restored:
-            self.load_note(self._note_id)
-            self.status_message.emit("已恢复历史版本（内容已进入同步队列）")
+            # 恢复结果已经写库：必须先丢弃编辑器的脏状态并取消挂起的自动保存，
+            # 再重新载入；否则旧内容会被下一次自动保存/关窗写回，看起来像没恢复
+            self._autosave.stop()
+            self._set_dirty(False)
+            status = self.load(note_id)
+            if status in ("needs_pin", "bad_pin"):
+                self.status_message.emit("已恢复历史版本；该便签已加密，请重新打开并解锁查看")
+                self.back_requested.emit()
+            else:
+                self.status_message.emit("已恢复历史版本（内容已进入同步队列）")
 
     def _pick_color(self) -> None:
         color = ColorPickerDialog.request(self, self._color, self._theme)
@@ -736,10 +761,28 @@ class EditorPage(QWidget):
 
     def _delete_note(self) -> None:
         if self._note_id is None:
-            if QMessageBox.question(self, "放弃便签", "放弃这条未保存的便签？") == QMessageBox.StandardButton.Yes:
+            answer = QMessageBox.question(
+                self,
+                "放弃便签",
+                "放弃这条未保存的便签？（输入的内容不会被保存）",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                # 真正放弃：清空编辑器并丢弃脏状态。只返回列表的话，_dirty 仍为真，
+                # 之后 load()/关窗时会先 save()，被「放弃」的草稿会静默保存复活
+                self._autosave.stop()
+                self._set_dirty(False)
+                self.load(None)
                 self.back_requested.emit()
             return
-        if QMessageBox.question(self, "删除便签", "将便签移到回收站？（30 天后自动清除）") != QMessageBox.StandardButton.Yes:
+        if QMessageBox.question(
+            self,
+            "删除便签",
+            "将便签移到回收站？（30 天后自动清除）",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        ) != QMessageBox.StandardButton.Yes:
             return
         note_id = self._note_id
         self.store.move_to_trash(note_id)

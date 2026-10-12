@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -181,11 +182,18 @@ private fun TrashCard(
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                 )
             }
+            Spacer(Modifier.width(8.dp))
             IconButton(onClick = onRestore) {
                 Icon(Icons.Filled.Restore, contentDescription = "恢复")
             }
+            Spacer(Modifier.width(4.dp))
             IconButton(onClick = onDelete) {
-                Icon(Icons.Filled.Delete, contentDescription = "彻底删除")
+                // 与「恢复」拉开间距并用错误色区分：两枚同款图标相邻时易点错永久删除
+                Icon(
+                    Icons.Filled.Delete,
+                    contentDescription = "彻底删除",
+                    tint = MaterialTheme.colorScheme.error
+                )
             }
         }
     }

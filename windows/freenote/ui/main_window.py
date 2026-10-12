@@ -297,7 +297,6 @@ class MainWindow(QMainWindow):
         self._last_shown_message = ""
         self._list_dirty = False
         self._force_quit = False
-        self._tray_hint_shown = False
         self._last_notified_note_id: str | None = None
 
         # 搜索输入防抖：逐键全表查询 + 全量重建卡片在大库上会明显掉帧
@@ -362,10 +361,10 @@ class MainWindow(QMainWindow):
             target=self._migrate_legacy_images, name="freenote-image-migration", daemon=True
         ).start()
 
-        # 全局热键 Ctrl+Alt+N：唤起窗口并新建便签（注册失败静默忽略）
+        # 全局热键 Ctrl+Alt+N：唤起窗口并新建便签（可在设置中关闭；注册失败会提示）
         self.hotkey_pressed.connect(self._on_hotkey)
-        self._hotkey = GlobalHotkey(self.hotkey_pressed.emit)
-        self._hotkey.start()
+        self._hotkey: GlobalHotkey | None = None
+        self._start_hotkey()
 
         # 自动备份：启动数秒后检查一次，之后每 30 分钟检查是否到点
         self._auto_backup_thread: threading.Thread | None = None
@@ -380,9 +379,10 @@ class MainWindow(QMainWindow):
         self.auto_timer.timeout.connect(lambda: self._sync_now(silent=True))
         self._restart_auto_timer()
 
-        # 启动后稍等片刻静默同步一次（主要是拉取服务器上的新改动；
-        # P2P 设备在互相发现后也会各自触发同步）
-        QTimer.singleShot(4000, self, lambda: self._sync_now(silent=True))
+        # 启动后稍等片刻静默同步一次（主要是拉取服务器/P2P 上的新改动）。
+        # 仅在用户开启了相应的自动同步时才进行：关闭自动同步 = 不做任何后台联网同步
+        if self._auto_sync_enabled():
+            QTimer.singleShot(4000, self, lambda: self._sync_now(silent=True))
 
         # 本地修改后延迟触发一次服务器同步，避免连续输入时反复请求
         self._server_change_timer = QTimer(self)
@@ -1072,6 +1072,34 @@ class MainWindow(QMainWindow):
         self._restore_from_tray()
         self._new_note()
 
+    def _start_hotkey(self) -> None:
+        """按设置启动全局热键；被其他程序占用（注册失败）时给出可见提示。"""
+        self._stop_hotkey()
+        if not self.settings.hotkey_enabled:
+            return
+        hotkey = GlobalHotkey(self.hotkey_pressed.emit)
+        hotkey.start()
+        self._hotkey = hotkey
+        QTimer.singleShot(1500, self, self._check_hotkey_registered)
+
+    def _check_hotkey_registered(self) -> None:
+        hotkey = self._hotkey
+        if hotkey is not None and not hotkey.registered:
+            self._notify(
+                "FreeNote 全局热键不可用",
+                "Ctrl+Alt+N 可能被其他程序占用；可在设置中关闭该热键。",
+            )
+
+    def _stop_hotkey(self) -> None:
+        hotkey = self._hotkey
+        self._hotkey = None
+        if hotkey is not None:
+            hotkey.stop()
+
+    def _on_hotkey_enabled_changed(self, enabled: bool) -> None:
+        self.settings.hotkey_enabled = enabled
+        self._start_hotkey()
+
     def _quick_capture_from_clipboard(self) -> None:
         """从剪贴板快速新建便签：首行作为标题，其余作为正文。"""
         clipboard = QApplication.clipboard()
@@ -1194,7 +1222,13 @@ class MainWindow(QMainWindow):
         self._notify_local_change()
 
     def _trash_note(self, note_id: str) -> None:
-        if QMessageBox.question(self, "删除便签", "将便签移到回收站？（30 天后自动清除）") != QMessageBox.StandardButton.Yes:
+        if QMessageBox.question(
+            self,
+            "删除便签",
+            "将便签移到回收站？（30 天后自动清除）",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        ) != QMessageBox.StandardButton.Yes:
             return
         self.store.move_to_trash(note_id)
         self.refresh_all()
@@ -1243,7 +1277,11 @@ class MainWindow(QMainWindow):
         if count == 0:
             return
         if QMessageBox.question(
-            self, "删除便签", f"将选中的 {count} 条便签移到回收站？（30 天后自动清除）"
+            self,
+            "删除便签",
+            f"将选中的 {count} 条便签移到回收站？（30 天后自动清除）",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         ) != QMessageBox.StandardButton.Yes:
             return
         moved = 0
@@ -1305,7 +1343,13 @@ class MainWindow(QMainWindow):
         self._notify_local_change()
 
     def _purge_note(self, note_id: str) -> None:
-        if QMessageBox.question(self, "彻底删除", "永久删除这条便签？此操作不可撤销。") != QMessageBox.StandardButton.Yes:
+        if QMessageBox.question(
+            self,
+            "彻底删除",
+            "永久删除这条便签？此操作不可撤销。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        ) != QMessageBox.StandardButton.Yes:
             return
         note = self.store.get(note_id)
         self.store.delete_hard(note_id)
@@ -1318,7 +1362,13 @@ class MainWindow(QMainWindow):
         trashed = self.store.list_trash()
         if not trashed:
             return
-        if QMessageBox.question(self, "清空回收站", f"永久删除 {len(trashed)} 条便签？此操作不可撤销。") != QMessageBox.StandardButton.Yes:
+        if QMessageBox.question(
+            self,
+            "清空回收站",
+            f"永久删除 {len(trashed)} 条便签？此操作不可撤销。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        ) != QMessageBox.StandardButton.Yes:
             return
         for note in self.store.empty_trash():
             self._delete_note_images(note)
@@ -1463,10 +1513,14 @@ class MainWindow(QMainWindow):
         if text:
             self._present_sync_message(text)
 
+    def _auto_sync_enabled(self) -> bool:
+        """任一通道的自动同步开启且可用（与自动同步定时器/启动同步共用判断）。"""
+        return (self.settings.auto_sync and self.settings.p2p_ready()) or (
+            self.settings.server_auto_sync and self.settings.server_ready()
+        )
+
     def _restart_auto_timer(self) -> None:
-        p2p_auto = self.settings.auto_sync and self.settings.p2p_ready()
-        server_auto = self.settings.server_auto_sync and self.settings.server_ready()
-        if p2p_auto or server_auto:
+        if self._auto_sync_enabled():
             self.auto_timer.start(self.settings.sync_interval_min * 60_000)
         else:
             self.auto_timer.stop()
@@ -1589,6 +1643,7 @@ class MainWindow(QMainWindow):
         dialog.set_sync_status(self._last_sync_status)
         dialog.set_peers(self.engine.peers())
         dialog.theme_selected.connect(self._on_theme_selected)
+        dialog.hotkey_enabled_changed.connect(self._on_hotkey_enabled_changed)
         dialog.set_pin_requested.connect(lambda: self._set_pin(dialog))
         dialog.change_pin_requested.connect(lambda: self._change_pin(dialog))
         dialog.clear_pin_requested.connect(lambda: self._clear_pin(dialog))
@@ -1903,9 +1958,28 @@ class MainWindow(QMainWindow):
         messages: list[str] = []
         if texts:
             messages.append(backup.import_text_files(self.store, texts).message)
-        for backup_path in backups:
-            messages.append(backup.import_notes(self.store, backup_path).message)
+        if backups:
+            # JSON 备份会按 LWW 覆盖本机较旧的便签并让回收站条目重新入队：
+            # 与「导入 JSON 备份」按钮一样先确认，避免误拖文件导致静默覆盖
+            names = "、".join(Path(path).name for path in backups[:3])
+            extra = f" 等 {len(backups)} 个文件" if len(backups) > 3 else ""
+            answer = QMessageBox.question(
+                self,
+                "导入备份",
+                f"拖入的内容包含备份文件（{names}{extra}）：\n"
+                "备份里较新的便签会覆盖本机旧版本，本机较新的保持不变。继续导入？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                self.statusBar().showMessage("已取消导入备份", 6000)
+            else:
+                for backup_path in backups:
+                    messages.append(backup.import_notes(self.store, backup_path).message)
         if not messages:
+            if backups and not texts:
+                # 只有备份文件且用户取消：已给出取消提示，不再报「不是可导入文件」
+                return
             self.statusBar().showMessage("拖入的文件不是 .md/.txt/.json，未导入", 6000)
             return
         self.refresh_all()
@@ -1925,6 +1999,8 @@ class MainWindow(QMainWindow):
             self,
             "导入备份",
             "将把备份中的便签合并导入：备份里较新的便签会覆盖本机旧版本，本机较新的保持不变。继续？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         ) != QMessageBox.StandardButton.Yes:
             return
         self._start_backup_worker("import", path)
@@ -1954,9 +2030,6 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ 关闭
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
-        hotkey = getattr(self, "_hotkey", None)
-        if hotkey is not None:
-            hotkey.stop()
         if not self.editor.prepare_close():
             event.ignore()
             return
@@ -1979,15 +2052,15 @@ class MainWindow(QMainWindow):
             # 否则用户以为只是收起窗口，实际提醒全部错过（退出请用托盘菜单）
             event.ignore()
             self.hide()
-            if not self._tray_hint_shown:
-                self._tray_hint_shown = True
-                self._tray.showMessage(
-                    "FreeNote 仍在后台运行",
-                    "提醒与同步会继续运行；右键托盘图标可退出。",
-                    QSystemTrayIcon.MessageIcon.Information,
-                    5000,
-                )
+            # 每次收起都提示：仅首次提示会让后续用户误以为程序已退出
+            self._tray.showMessage(
+                "FreeNote 仍在后台运行",
+                "窗口已最小化到托盘：提醒与同步会继续运行；右键托盘图标可退出。",
+                QSystemTrayIcon.MessageIcon.Information,
+                5000,
+            )
             return
+        self._stop_hotkey()
         self.settings.set("window_width", self.width(), save=False)
         self.settings.set("window_height", self.height(), save=False)
         if not self.isMaximized() and not self.isFullScreen():

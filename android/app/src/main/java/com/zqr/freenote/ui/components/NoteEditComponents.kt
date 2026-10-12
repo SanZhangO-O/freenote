@@ -237,11 +237,8 @@ fun NoteEditReminderRow(
         Spacer(Modifier.width(8.dp))
         Text("提醒：$formattedTime", style = MaterialTheme.typography.bodyMedium)
         Spacer(Modifier.weight(1f))
-        Text(
-            "清除",
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.clickable { onClear() }
-        )
+        // 用 TextButton 而非纯 Text：整行按钮有最小 48dp 触控区与涟漪反馈，降低误触/漏触率
+        TextButton(onClick = onClear) { Text("清除") }
     }
 }
 

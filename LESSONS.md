@@ -57,3 +57,24 @@
 - Windows 全局热键：非 Windows 环境 `ctypes.windll` 不存在会让线程带异常退出 → `hotkey.py` 开头 `hasattr(ctypes, "windll")` 保护。
 - P2P `image_get`：服务端因字节上限只回传部分条目（`more=true`）时，客户端原来把整批都当作已处理，导致本轮剩余图片不重试 → 改为只移除「已收到 + 对端明确 missing」的名（`p2p/client.py`、`Android P2PClient.kt`）。
 - 备份导出：图片总量超上限（Windows 1.2GB / Android 64MB）时原来静默截断 → 现在在结果消息里明示「其余图片未包含」（`backup.py`、`BackupManager.kt`）。
+
+## 2026-10-12 Windows 历史恢复调用不存在的 load_note：恢复看似无效还会被自动保存冲掉
+- 现象: 历史版本恢复后界面不刷新、无提示；继续编辑后恢复结果消失（用户以为恢复失败）。
+- 根因: `_show_history` 调用不存在的 `EditorPage.load_note()`（只有 `load()`），槽函数里的 AttributeError 被 Qt 吞掉；且编辑器仍是脏状态，挂起的自动保存/关窗保存会把旧内容写回库，覆盖刚恢复的版本。
+- 修复: `windows/freenote/ui/editor_page.py::_show_history` 改为先 `_autosave.stop()` + `_set_dirty(False)` 再 `load(note_id)`；加密便签恢复后需重新解锁时给提示并返回列表。
+- 验证: 静态核对 `load` 定义与调用点；建议手工回归：把便签改成 A→B→C 后恢复 B，界面应立即显示 B，等过一个自动保存间隔后仍为 B。
+- 防再犯: 「先写库、再刷新界面」的流程里，刷新前必须先清脏并取消挂起的自动保存；UI 方法改名/删除后全局 grep 调用点。
+
+## 2026-10-12 误操作防护加固：确认框默认按钮、reject 语义与「放弃」的脏状态
+- 现象: 一键换同步口令/UUID、拖拽导入 JSON 备份、Esc 关设置面板都会「静默生效」；删除类确认框回车即确认（Qt 默认取第一个按钮 Yes）；「放弃便签」后草稿又被静默保存复活。
+- 根因: `QMessageBox.question` 未显式指定 defaultButton；`SettingsDialog.reject()` 里调 `_apply_fields()` 把「取消」实现成「应用」；设置文本字段绑 `editingFinished` 边打字边写盘；`_delete_note` 放弃分支只发 `back_requested` 不清 `_dirty`，下一次 `load()` 先 `save()` 使草稿复活。
+- 修复: 破坏性/共享凭据类确认框统一显式 `defaultButton=No`；口令/UUID 生成加二次确认；拖拽 JSON 备份加确认；`reject()` 改为放弃未保存文本修改（有改动时二次确认），文本字段去掉 `editingFinished` 即时写盘，仅在「保存并关闭」/登录/测试等显式动作提交；放弃分支清脏并 `load(None)`；Android 同步设置同样改为失焦/键盘完成后提交。
+- 验证: 静态走查全部 `QMessageBox.question` 调用；建议手工回归：设置里改服务器地址后按 Esc，设置应保持原值且设备列表不被重置。
+- 防再犯: 三点约定——破坏性确认默认 No；对话框 reject 必须放弃而不是应用；「放弃/删除」类操作必须同时清脏状态与挂起定时器，否则后续 save 会把内容复活。
+
+## 2026-10-12 有损转换的确认条件必须覆盖全部丢失项
+- 现象: 含空行/缩进的纯文本（无 Markdown 标记）切清单时不弹确认，空行/缩进被静默丢弃并随自动保存落库。
+- 根因: `markdownToChecklistLosesMarkup` 只查 Markdown 标记正则，而 `markdownToChecklist` 还会丢空行（`line.isEmpty -> null`）并 trim 行首/行尾空白。
+- 修复: 检测条件补充「空行、`raw != raw.trim()`」，并覆盖单个 `*` 与 `[[` 标记；补单测 `lossDetectionCoversBlankLinesIndentAndInlineMarkup`（`ChecklistTest.kt`）。
+- 验证: 静态对照转换函数每一处信息丢失点与检测条件；建议 `android/gradlew :app:testDebugUnitTest --tests "*ChecklistTest*"`（默认不自动跑）。
+- 防再犯: 「转换前提示」的检测函数必须与转换实现逐条对齐，新增丢弃行为时同步更新检测与测试。

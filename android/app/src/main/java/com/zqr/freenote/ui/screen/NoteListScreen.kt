@@ -33,7 +33,6 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.DriveFileMove
 import androidx.compose.material.icons.filled.LocalOffer
 import androidx.compose.material.icons.filled.PushPin
@@ -41,6 +40,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Notifications
@@ -140,6 +140,11 @@ fun NoteListScreen(
 
     // 旋转等重建后与 ViewModel 中的查询状态对齐，避免搜索栏收起但筛选仍生效
     var showSearch by remember { mutableStateOf(searchQuery.isNotEmpty()) }
+    // 搜索态系统返回键：先收起搜索（并清空查询），而不是直接离开列表页
+    BackHandler(enabled = showSearch) {
+        showSearch = false
+        viewModel.clearSearch()
+    }
     var sortMenuExpanded by remember { mutableStateOf(false) }
     val searchFocusRequester = remember { FocusRequester() }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -302,7 +307,8 @@ fun NoteListScreen(
                             }
                         }
                         IconButton(onClick = onNavigateToTrash) {
-                            Icon(Icons.Filled.DeleteSweep, contentDescription = "回收站")
+                            // 回收站用垃圾桶图标；DeleteSweep 的语义是「清空」，容易误解为清空回收站
+                            Icon(Icons.Outlined.Delete, contentDescription = "回收站")
                         }
                         IconButton(onClick = onNavigateToSettings) {
                             Icon(Icons.Filled.Settings, contentDescription = "设置")
@@ -741,7 +747,7 @@ fun NoteCard(
                     }
                 }
                 Row {
-                    // 触控目标从 32dp 提到 40dp：小目标在列表里频繁误触置顶/删除
+                    // 触控目标 40dp 且两个按钮间留 8dp：零间距的置顶/删除极易互相误触
                     IconButton(onClick = onPin, modifier = Modifier.size(40.dp)) {
                         Icon(
                             if (note.isPinned) Icons.Filled.PushPin else Icons.Outlined.PushPin,
@@ -750,6 +756,7 @@ fun NoteCard(
                             tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                         )
                     }
+                    Spacer(modifier = Modifier.width(8.dp))
                     IconButton(onClick = onDelete, modifier = Modifier.size(40.dp)) {
                         Icon(
                             Icons.Filled.Delete,

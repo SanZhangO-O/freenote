@@ -43,6 +43,7 @@ from ..models import (
     format_full_time,
     format_note_time,
     normalize_recurrence,
+    now_ms,
     strip_image_tokens,
 )
 from ..settings import Settings
@@ -261,8 +262,15 @@ class ReminderDialog(QDialog):
         layout.addWidget(buttons)
 
     def _accept(self) -> None:
+        value = int(self.edit.dateTime().toMSecsSinceEpoch())
+        # 过去的时间会导致保存后立刻弹一次通知随即消失（一次性提醒），必须先拦下
+        if value <= now_ms():
+            QMessageBox.warning(
+                self, "提醒时间", "提醒时间已过。请选择将来的时间，或用「清除提醒」取消提醒。"
+            )
+            return
         self.action = "set"
-        self.value = int(self.edit.dateTime().toMSecsSinceEpoch())
+        self.value = value
         self.recurrence = normalize_recurrence(str(self.recurrence_combo.currentData() or ""))
         self.accept()
 
@@ -360,6 +368,8 @@ class HistoryDialog(QDialog):
             self,
             "恢复版本",
             f"用 {saved} 的版本覆盖当前内容？（当前内容会先存入历史，可再恢复回来）",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
@@ -372,6 +382,7 @@ class HistoryDialog(QDialog):
 
 class SettingsDialog(QDialog):
     theme_selected = Signal(str)
+    hotkey_enabled_changed = Signal(bool)
     set_pin_requested = Signal()
     change_pin_requested = Signal()
     clear_pin_requested = Signal()
@@ -424,6 +435,11 @@ class SettingsDialog(QDialog):
             self.theme_buttons[key] = radio
         theme_row.addStretch(1)
         root.addLayout(theme_row)
+        self.hotkey_check = QCheckBox("启用全局热键 Ctrl+Alt+N（任意程序里快速新建便签）")
+        self.hotkey_check.setChecked(settings.hotkey_enabled)
+        self.hotkey_check.setToolTip("与其他程序快捷键冲突时可关闭；关闭后不再全局抢占该组合键")
+        self.hotkey_check.toggled.connect(self.hotkey_enabled_changed.emit)
+        root.addWidget(self.hotkey_check)
 
         root.addWidget(hline())
         # ------------------------------------------------------------ 隐私
@@ -459,7 +475,6 @@ class SettingsDialog(QDialog):
         form.addWidget(QLabel("设备名称"), 0, 0)
         self.device_name_edit = QLineEdit(settings.device_name)
         self.device_name_edit.setPlaceholderText("例如：我的笔记本")
-        self.device_name_edit.editingFinished.connect(self._apply_fields)
         form.addWidget(self.device_name_edit, 0, 1, 1, 2)
         form.addWidget(QLabel("同步端口"), 0, 3)
         self.port_spin = QSpinBox()
@@ -474,10 +489,9 @@ class SettingsDialog(QDialog):
         self.passphrase_edit = RevealOnFocusLineEdit(settings.group_passphrase)
         self.passphrase_edit.setPlaceholderText("同一口令的设备才会互相发现并同步")
         self.passphrase_edit.setToolTip("默认隐藏，点击输入框时显示明文，避免录屏或旁人直视泄露")
-        self.passphrase_edit.editingFinished.connect(self._apply_fields)
         form.addWidget(self.passphrase_edit, 1, 1, 1, 2)
         self.gen_passphrase_button = push_button("生成随机口令")
-        self.gen_passphrase_button.clicked.connect(self._generate_passphrase)
+        self.gen_passphrase_button.clicked.connect(self._confirm_generate_passphrase)
         self.copy_passphrase_button = push_button("复制")
         self.copy_passphrase_button.clicked.connect(self._copy_passphrase)
         form.addWidget(self.gen_passphrase_button, 1, 3)
@@ -492,10 +506,9 @@ class SettingsDialog(QDialog):
             "点「生成 UUID」得到随机账户，复制到其他设备填写即可组成私有同步组，\n"
             "无需注册服务器账号（UUID 仅是组名，口令仍是必填的共享凭据）。"
         )
-        self.account_edit.editingFinished.connect(self._apply_fields)
         form.addWidget(self.account_edit, 2, 1, 1, 2)
         self.gen_account_button = push_button("生成 UUID")
-        self.gen_account_button.clicked.connect(self._generate_account_uuid)
+        self.gen_account_button.clicked.connect(self._confirm_generate_account_uuid)
         self.copy_account_button = push_button("复制")
         self.copy_account_button.clicked.connect(self._copy_account)
         form.addWidget(self.gen_account_button, 2, 3)
@@ -577,12 +590,10 @@ class SettingsDialog(QDialog):
         server_form.addWidget(QLabel("服务器地址"), 0, 0)
         self.server_url_edit = QLineEdit(settings.server_url)
         self.server_url_edit.setPlaceholderText("http://192.168.1.8:8000 或 https://example.com")
-        self.server_url_edit.editingFinished.connect(self._apply_server_fields)
         server_form.addWidget(self.server_url_edit, 0, 1, 1, 3)
         server_form.addWidget(QLabel("用户名"), 1, 0)
         self.server_user_edit = QLineEdit(settings.server_username)
         self.server_user_edit.setPlaceholderText("与 Android 版使用同一账号")
-        self.server_user_edit.editingFinished.connect(self._apply_server_fields)
         server_form.addWidget(self.server_user_edit, 1, 1)
         server_form.addWidget(QLabel("密码"), 1, 2)
         self.server_password_edit = RevealOnFocusLineEdit()
@@ -685,7 +696,6 @@ class SettingsDialog(QDialog):
         self.webdav_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
         for widget in (self.webdav_url_edit, self.webdav_user_edit, self.webdav_password_edit):
             webdav_row.addWidget(widget, 1)
-            widget.editingFinished.connect(self._save_webdav)
         root.addLayout(webdav_row)
         webdav_hint = QLabel("自动备份会按间隔把全量 JSON（含图片）写入备份目录并只保留最近 10 份；配置 WebDAV 后会同步上传。")
         webdav_hint.setObjectName("SubText")
@@ -701,8 +711,11 @@ class SettingsDialog(QDialog):
         outer.addWidget(scroll)
 
         close_row = QHBoxLayout()
+        hint = QLabel("文本框修改在点「保存并关闭」时生效；Esc / 右上角 × 放弃未保存的修改")
+        hint.setObjectName("SubText")
+        close_row.addWidget(hint)
         close_row.addStretch(1)
-        close = push_button("关闭")
+        close = push_button("保存并关闭", "Primary")
         close.clicked.connect(self.accept)
         close_row.addWidget(close)
         outer.addLayout(close_row)
@@ -812,6 +825,18 @@ class SettingsDialog(QDialog):
         ):
             widget.setEnabled(enabled)
 
+    def _confirm_generate_passphrase(self) -> None:
+        """生成口令是一次性替换共享凭据：先确认，避免误点导致其他设备失联。"""
+        answer = QMessageBox.question(
+            self,
+            "生成随机口令",
+            "将立即把同步口令替换为新值：其他设备必须改用新口令，否则无法再发现/同步本机。\n\n继续生成？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self._generate_passphrase()
+
     def _generate_passphrase(self) -> None:
         self.passphrase_edit.setText(generate_passphrase())
         self._apply_fields()
@@ -826,6 +851,18 @@ class SettingsDialog(QDialog):
         if clipboard is not None:
             clipboard.setText(text)
         self.sync_status.setText("同步口令已复制到剪贴板")
+
+    def _confirm_generate_account_uuid(self) -> None:
+        """更换离线账户等于切换同步组：先确认，避免误点后设备列表被重置。"""
+        answer = QMessageBox.question(
+            self,
+            "生成 UUID 离线账户",
+            "将立即把离线账户替换为新值：其他设备需要填写相同账户才能同组同步。\n\n继续生成？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self._generate_account_uuid()
 
     def _generate_account_uuid(self) -> None:
         self.account_edit.setText(str(uuid.uuid4()))
@@ -1091,17 +1128,49 @@ class SettingsDialog(QDialog):
     def _request_forget(self, peer_id: str) -> None:
         if not peer_id:
             return
+        answer = QMessageBox.question(
+            self,
+            "移除设备",
+            "从设备列表中移除该设备？（之后可重新发现或手动添加）",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
         self.forget_peer_requested.emit(peer_id)
 
     # ------------------------------------------------------------------ 关闭
 
+    def _pending_text_changes(self) -> bool:
+        """文本框里是否有尚未保存的修改（与 _apply_* 的规范化规则保持一致）。"""
+        return (
+            self.device_name_edit.text().strip() != self.settings.device_name
+            or self.passphrase_edit.text().strip() != self.settings.group_passphrase
+            or self.account_edit.text().strip() != self.settings.p2p_account
+            or self.server_url_edit.text().strip().rstrip("/") != self.settings.server_url
+            or self.server_user_edit.text().strip() != self.settings.server_username
+            or self.webdav_url_edit.text().strip().rstrip("/") != self.settings.webdav_url
+            or self.webdav_user_edit.text().strip() != self.settings.webdav_user
+            or self.webdav_password_edit.text() != self.settings.webdav_password
+        )
+
     def accept(self) -> None:  # noqa: D102
         self._apply_fields()
         self._apply_server_fields()
+        self._save_webdav()
         super().accept()
 
     def reject(self) -> None:  # noqa: D102
-        # 直接关窗（不点「关闭」）时也要把输入框里的设置写入
-        self._apply_fields()
-        self._apply_server_fields()
+        # Esc / 关窗 = 放弃未保存的文本修改，不写盘、不切换同步账户。
+        # 之前这里把输入框直接写入设置，用户以为取消实则生效（尤其会切换同步账户命名空间）。
+        if self._pending_text_changes():
+            answer = QMessageBox.question(
+                self,
+                "放弃修改",
+                "口令、服务器地址或用户名等文本框中有尚未保存的修改。\n放弃这些修改并关闭？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
         super().reject()

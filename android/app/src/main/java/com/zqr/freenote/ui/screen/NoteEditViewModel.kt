@@ -175,6 +175,13 @@ class NoteEditViewModel(
     var showDiscardDialog by mutableStateOf(false)
         private set
 
+    /**
+     * 新建便签只设置了标签/颜色/置顶等元数据、没有正文时按返回的确认对话框：
+     * 直接静默丢弃会让用户以为这些设置已随便签保存。
+     */
+    var showEmptyDiscardDialog by mutableStateOf(false)
+        private set
+
     private var snapshot: NoteSnapshot? = null
 
     /** 待执行的自动保存任务；每次编辑重置计时，保存入口会先取消避免重复写库。 */
@@ -754,10 +761,10 @@ class NoteEditViewModel(
             back(onNavigateBack)
             return
         }
-        // 空便签：标签/颜色/置顶等单独存在时没有正文可保存，直接放弃，
-        // 避免用户按返回只看到「内容为空，未保存」却无法离开（像返回键失灵）
+        // 只有标签/颜色/置顶等元数据、没有正文：这些设置无法随空便签落库，
+        // 静默丢弃会让用户以为已保存；先确认再离开
         if (loadedNote == null && title.isBlank() && content.isBlank()) {
-            back(onNavigateBack)
+            showEmptyDiscardDialog = true
             return
         }
         if (isLocked && viewModel.getUnlockPin() == null) {
@@ -775,6 +782,16 @@ class NoteEditViewModel(
 
     fun cancelDiscard() {
         showDiscardDialog = false
+    }
+
+    /** 无正文便签的返回确认：确认后丢弃元数据并离开。 */
+    fun confirmEmptyDiscard(onNavigateBack: () -> Unit) {
+        showEmptyDiscardDialog = false
+        back(onNavigateBack)
+    }
+
+    fun cancelEmptyDiscard() {
+        showEmptyDiscardDialog = false
     }
 
     /**
@@ -920,7 +937,8 @@ class NoteEditViewModel(
                 sessionExpired = true
                 return
             }
-            expireStaleReminder(announce = false)
+            // 过期提醒被移除要可见：静默清除会让用户以为提醒还在（手动保存/自动保存一致）
+            expireStaleReminder(announce = true)
             val (note, pinForLock) = buildNote(sessionPin)
             // 新建且完全为空：不落库，避免随手进入就产生空记录
             if (loadedNote == null &&

@@ -96,22 +96,32 @@ fun markdownToChecklist(content: String): String {
     return if (items.isEmpty()) "" else serializeChecklist(items)
 }
 
-/** 切换清单是否会不可逆地改动正文（含 Markdown 标记或空行）：用于转换前提示。 */
+/** 切换清单是否会不可逆地改动正文（含 Markdown 标记、空行或行首/行尾空白）：用于转换前提示。 */
 fun markdownToChecklistLosesMarkup(content: String): Boolean {
     if (content.isBlank()) return false
     return content.split("\n").any { raw ->
         val line = raw.trim()
-        line.isNotEmpty() && MARKDOWN_MARKER_REGEX.containsMatchIn(line)
+        when {
+            // 空行会被丢弃；行首缩进/行尾空格会被 trim 掉
+            line.isEmpty() -> true
+            raw != line -> true
+            else -> MARKDOWN_MARKER_REGEX.containsMatchIn(line)
+        }
     }
 }
 
-private val MARKDOWN_MARKER_REGEX = Regex("^(#{1,6}\\s|[-*+]\\s|>)|(\\*\\*|`)")
+private val MARKDOWN_MARKER_REGEX = Regex("^(#{1,6}\\s|[-*+]\\s|>)|(\\*\\*|\\*|`|\\[\\[)")
 
 @Composable
 fun ChecklistEditor(
     content: String,
     onContentChange: (String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /**
+     * 删除某项后回调（previous=删除前正文，deleted=删除后正文）：
+     * 供界面提供「撤销」，与自动保存落库赛跑，避免误触删除无法恢复。
+     */
+    onItemDeleted: ((previous: String, deleted: String) -> Unit)? = null
 ) {
     val items = remember(content) { parseChecklist(content) }
     // 图片标记行在清单里仍按图片呈现，而不是显示原始标记文本
@@ -165,14 +175,17 @@ fun ChecklistEditor(
                     )
                 }
                 IconButton(onClick = {
+                    val previous = content
                     val updated = items.toMutableList()
-                    if (updated.size == 1) {
+                    val next = if (updated.size == 1) {
                         // 删除唯一一项时直接清空内容，避免残留 "- [ ] " 占位
-                        onContentChange("")
+                        ""
                     } else {
                         updated.removeAt(index)
-                        onContentChange(serializeChecklist(updated))
+                        serializeChecklist(updated)
                     }
+                    onContentChange(next)
+                    onItemDeleted?.invoke(previous, next)
                 }) {
                     Icon(Icons.Filled.Close, contentDescription = "删除项")
                 }
