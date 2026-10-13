@@ -10,11 +10,9 @@ Android 版使用同一套服务端协议，因此两端（Android / Windows）�
 
 from __future__ import annotations
 
-import ipaddress
 import json
 import threading
 from dataclasses import dataclass
-from urllib.parse import urlparse
 
 import requests
 import urllib3
@@ -29,25 +27,8 @@ _USER_AGENT = "FreeNote-Windows/1.0"
 
 
 def _needs_https_hint(url: str) -> bool:
-    """明文 HTTP 且目标不是本机/内网地址时返回 True（用于提示改用 HTTPS）。
-
-    私有地址（RFC1918 / 链路本地 / 环回）不提示；域名一律视为公网。
-    """
-    try:
-        parsed = urlparse(url)
-    except ValueError:
-        return False
-    if (parsed.scheme or "").lower() != "http":
-        return False
-    host = (parsed.hostname or "").lower()
-    if not host:
-        return False
-    if host in ("localhost", "127.0.0.1", "::1") or host.endswith(".local"):
-        return False
-    try:
-        return not ipaddress.ip_address(host).is_private
-    except ValueError:
-        return True
+    """明文 HTTP 且目标不是本机/内网地址时返回 True（用于提示改用 HTTPS）。"""
+    return config.is_plaintext_public_url(url)
 
 
 class SyncError(Exception):
@@ -109,12 +90,16 @@ def _error_message(response: requests.Response) -> str:
 
 
 def normalize_server_url(text: str) -> str:
-    """补全协议前缀并去掉尾部斜杠，例如 192.168.1.8:8000 → http://192.168.1.8:8000。"""
+    """补全协议前缀并去掉尾部斜杠，例如：
+    192.168.1.8:8000 → http://192.168.1.8:8000（本机/内网保持明文 HTTP）；
+    example.com:8000 → https://example.com:8000（公网默认 HTTPS，避免凭据走明文）。
+    """
     value = (text or "").strip().rstrip("/")
     if not value:
         return ""
     if "://" not in value:
-        value = "http://" + value
+        scheme = "http" if config.is_local_host(config.host_of(value)) else "https"
+        value = f"{scheme}://" + value
     return value
 
 

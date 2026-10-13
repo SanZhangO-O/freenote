@@ -22,11 +22,14 @@ import org.json.JSONObject
  * - 请求/响应正文 AES-256-GCM 加密（密文 = nonce(12) + ciphertext + tag(16)）；
  * - 密文上再做 HMAC-SHA256 签名（时间戳 + 随机数 + 正文哈希），防篡改与重放；
  * - 状态摘要、LWW 判定、便签 JSON（camelCase，与 Android 备份格式一致）；
+ * - 协议 v7：锁定便签密文升级为 v2（随机盐 + PBKDF2 600000 次），旧版客户端
+ *   （v6 及以前）无法解密；P2P 以协议版本门控，混合版本会收到明确的「请升级」提示
+ *   而不是静默把锁定便签显示成 PIN 错误。
  * - 协议 v6：清单/摘要带内容哈希（含 folder 路径）与附件引用状态（freenote-img 附件），
  *   同毫秒平局按「删除优先 → 内容哈希小者胜」确定性仲裁。
  */
 object SyncProtocol {
-    const val PROTOCOL_VERSION = 6
+    const val PROTOCOL_VERSION = 7
     const val GROUP_KEY_ITERATIONS = 600_000
     const val AUTH_CLOCK_SKEW_MS = 5 * 60 * 1000L
     const val ENVELOPE_HEADER = "X-FreeNote-Enc"

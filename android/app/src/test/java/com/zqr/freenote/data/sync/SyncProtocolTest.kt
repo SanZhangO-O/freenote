@@ -30,8 +30,8 @@ class SyncProtocolTest {
 
     @Test
     fun keysAccountsAndTagsMatchPythonVectors() {
-        // 协议版本与迭代次数与 Windows 端 config.py 一致（v6：附件同步 + 重复提醒）
-        assertEquals(6, SyncProtocol.PROTOCOL_VERSION)
+        // 协议版本与迭代次数与 Windows 端 config.py 一致（v7：锁定便签密文 v2）
+        assertEquals(7, SyncProtocol.PROTOCOL_VERSION)
         assertEquals(600_000, SyncProtocol.GROUP_KEY_ITERATIONS)
 
         // 组密钥：无账户与带账户两种派生

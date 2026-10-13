@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import attachments
+from .. import config
 from .. import crypto
 from .. import __version__ as app_version
 from .. import markdown as markdown_mod
@@ -51,6 +52,11 @@ from . import theme as theme_mod
 from .widgets import hline, push_button
 
 _PASSPHRASE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+
+def _passphrase_too_short(value: str) -> bool:
+    """非空且短于最小长度：拒绝写入设置（发现广播 tag 可被离线穷举口令）。"""
+    return bool(value) and len(value) < config.MIN_PASSPHRASE_LENGTH
 
 
 def generate_passphrase(groups: int = 4, group_len: int = 4) -> str:
@@ -84,9 +90,14 @@ def _pin_edit(placeholder: str = "PIN") -> QLineEdit:
     edit = QLineEdit()
     edit.setEchoMode(QLineEdit.EchoMode.Password)
     edit.setMaxLength(crypto.PIN_MAX_LENGTH)
-    edit.setValidator(QRegularExpressionValidator(QRegularExpression("[0-9]{0,6}")))
+    edit.setValidator(
+        QRegularExpressionValidator(QRegularExpression(f"[0-9]{{0,{crypto.PIN_MAX_LENGTH}}}"))
+    )
     edit.setPlaceholderText(placeholder)
     return edit
+
+
+_PIN_LENGTH_TEXT = f"{crypto.PIN_MIN_LENGTH}~{crypto.PIN_MAX_LENGTH}"
 
 
 class PinDialog(QDialog):
@@ -117,7 +128,7 @@ class PinDialog(QDialog):
     def _try_accept(self) -> None:
         pin = self.edit.text()
         if not crypto.is_complete_pin(pin):
-            self.error.setText("请输入 4~6 位数字 PIN")
+            self.error.setText(f"请输入 {_PIN_LENGTH_TEXT} 位数字 PIN")
             return
         if not crypto.verify_pin(pin, self.settings.pin_hash):
             self.error.setText("PIN 错误，请重试")
@@ -146,7 +157,7 @@ class SetPinDialog(QDialog):
         self.setMinimumWidth(320)
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
-        layout.addWidget(QLabel("PIN 为 4~6 位数字，用于加密锁定便签。"))
+        layout.addWidget(QLabel(f"PIN 为 {_PIN_LENGTH_TEXT} 位数字，用于加密锁定便签。"))
         self.first = _pin_edit("输入新 PIN")
         self.second = _pin_edit("再次输入")
         layout.addWidget(self.first)
@@ -163,7 +174,7 @@ class SetPinDialog(QDialog):
     def _try_accept(self) -> None:
         first, second = self.first.text(), self.second.text()
         if not crypto.is_complete_pin(first):
-            self.error.setText("PIN 需为 4~6 位数字")
+            self.error.setText(f"PIN 需为 {_PIN_LENGTH_TEXT} 位数字")
             return
         if first != second:
             self.error.setText("两次输入不一致")
@@ -488,7 +499,10 @@ class SettingsDialog(QDialog):
         form.addWidget(QLabel("同步口令"), 1, 0)
         self.passphrase_edit = RevealOnFocusLineEdit(settings.group_passphrase)
         self.passphrase_edit.setPlaceholderText("同一口令的设备才会互相发现并同步")
-        self.passphrase_edit.setToolTip("默认隐藏，点击输入框时显示明文，避免录屏或旁人直视泄露")
+        self.passphrase_edit.setToolTip(
+            f"默认隐藏，点击输入框时显示明文，避免录屏或旁人直视泄露；"
+            f"至少 {config.MIN_PASSPHRASE_LENGTH} 位，建议点「生成随机口令」"
+        )
         form.addWidget(self.passphrase_edit, 1, 1, 1, 2)
         self.gen_passphrase_button = push_button("生成随机口令")
         self.gen_passphrase_button.clicked.connect(self._confirm_generate_passphrase)
@@ -765,7 +779,7 @@ class SettingsDialog(QDialog):
             self.settings.device_name = name
             changed = True
         passphrase = self.passphrase_edit.text().strip()
-        if passphrase != self.settings.group_passphrase:
+        if passphrase != self.settings.group_passphrase and not _passphrase_too_short(passphrase):
             self.settings.group_passphrase = passphrase
             changed = True
         account = self.account_edit.text().strip()
@@ -1155,6 +1169,16 @@ class SettingsDialog(QDialog):
         )
 
     def accept(self) -> None:  # noqa: D102
+        # 只校验本次真正修改过的口令：存量的短口令不阻塞其它设置的保存
+        entered = self.passphrase_edit.text().strip()
+        if entered != self.settings.group_passphrase and _passphrase_too_short(entered):
+            QMessageBox.warning(
+                self,
+                "同步口令",
+                f"同步口令至少 {config.MIN_PASSPHRASE_LENGTH} 位（建议使用「生成随机口令」）。\n"
+                "口令未保存：请加长口令，或清空该输入框后重试。",
+            )
+            return
         self._apply_fields()
         self._apply_server_fields()
         self._save_webdav()

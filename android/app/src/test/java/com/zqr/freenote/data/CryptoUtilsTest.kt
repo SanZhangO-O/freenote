@@ -46,4 +46,24 @@ class CryptoUtilsTest {
         val long = (1..500).joinToString("") { "第${it}行内容，" }
         assertEquals(long, CryptoUtils.decrypt(CryptoUtils.encrypt(long, "5678"), "5678"))
     }
+
+    @Test
+    fun decryptsLegacyAndV2CrossPlatformVectors() {
+        // 跨端固定向量（Windows crypto.py 以相同参数生成，保证两端互通）
+        val legacy = "AAECAwQFBgcICQoLtIH1Ta4QTHljJ3yYMc36WjNOoJq8fvKK8lCJ4Z7G9MXlU74ZHg=="
+        assertEquals("旧格式密文内容", CryptoUtils.decrypt(legacy, "1234"))
+        val v2 = "v2:600000:AAECAwQFBgcICQoLDA0ODwABAgMEBQYHCAkKC7id7RckXYRzVC35nH5MJSCG" +
+            "WQpI8FvASnq8P/HAAwvZUB2f53Sq"
+        assertEquals("跨端向量 v2 内容", CryptoUtils.decrypt(v2, "1234"))
+
+        // 新密文使用 v2 格式（随机盐 + 600000 次），同明文两次加密不同
+        val cipher = CryptoUtils.encrypt("v2 格式内容", "1234")
+        assertTrue(cipher.startsWith("v2:600000:"))
+        assertEquals("v2 格式内容", CryptoUtils.decrypt(cipher, "1234"))
+        assertNotEquals(cipher, CryptoUtils.encrypt("v2 格式内容", "1234"))
+
+        // 畸形 v2：非法迭代数/不可解码载荷一律拒绝，不因巨量迭代数空转 CPU
+        assertNull(CryptoUtils.decrypt("v2:999999999999:" + "A".repeat(64), "1234"))
+        assertNull(CryptoUtils.decrypt("v2:600000:@@@", "1234"))
+    }
 }

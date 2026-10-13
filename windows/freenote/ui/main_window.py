@@ -181,6 +181,44 @@ class ChangePinWorker(QThread):
         self.done.emit(ok, failed, "")
 
 
+class LockedDecryptWorker(QThread):
+    """后台解密锁定便签用于列表搜索：v2 密文每条 600000 次 PBKDF2，不能放在 GUI 线程。"""
+
+    def __init__(
+        self,
+        store: NoteStore,
+        pin: str,
+        cache: dict[str, tuple[int, str, str]],
+        failed: set[tuple[str, int]],
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self.store = store
+        self.pin = pin
+        self.cache = cache
+        self.failed = failed
+
+    def run(self) -> None:  # noqa: D102
+        try:
+            for note in self.store.list_active():
+                if not note.is_locked:
+                    continue
+                cached = self.cache.get(note.id)
+                if cached is not None and cached[0] == note.updated_at:
+                    continue
+                if (note.id, note.updated_at) in self.failed:
+                    continue
+                title = crypto.decrypt(note.title, self.pin)
+                content = crypto.decrypt(note.content, self.pin)
+                if title is None or content is None:
+                    # 解密失败（如 PIN 已换）：记录避免每次搜索重复空转
+                    self.failed.add((note.id, note.updated_at))
+                    continue
+                self.cache[note.id] = (note.updated_at, title, content)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 class BackupWorker(QThread):
     """导出/导入备份：大库的 JSON 读写与逐条写库放后台，避免窗口假死。"""
 
@@ -282,6 +320,9 @@ class MainWindow(QMainWindow):
         self._sort_desc = True
         self._timeline_mode = False
         self._locked_decrypt_cache: dict[str, tuple[int, str, str]] = {}
+        # 解密失败记录（note_id, updated_at）：避免后台反复对同一密文做无用的 PBKDF2
+        self._locked_decrypt_failed: set[tuple[str, int]] = set()
+        self._locked_decrypt_worker: LockedDecryptWorker | None = None
         self._batch_mode = False
         self._batch_selected: set[str] = set()
         self._visible_note_ids: list[str] = []
@@ -935,31 +976,49 @@ class MainWindow(QMainWindow):
         scrollbar.setValue(min(saved_scroll, scrollbar.maximum()))
 
     def _search_locked_notes(self, query: str) -> list[Note]:
-        """锁定便签的解锁态搜索：用会话 PIN 在内存中解密标题/正文后匹配。
+        """锁定便签的解锁态搜索：只读内存缓存，未缓存的交给后台解密（不阻塞 UI）。
 
         解密结果按 updatedAt 缓存，便签被修改后自动重新解密；PIN 会话过期后
-        锁定便签不再参与搜索（与 Android 端行为一致）。
+        锁定便签不再参与搜索（与 Android 端行为一致）。v2 密文每条要 600000 次
+        PBKDF2，绝不放在 GUI 线程计算，缺失的结果由后台线程补算后刷新列表。
         """
         pin = self._session.get_pin()
         if pin is None:
             return []
         needle = query.casefold()
         matches: list[Note] = []
+        pending = False
         for note in self.store.list_active():
             if not note.is_locked:
                 continue
             cached = self._locked_decrypt_cache.get(note.id)
             if cached is None or cached[0] != note.updated_at:
-                title = crypto.decrypt(note.title, pin)
-                content = crypto.decrypt(note.content, pin)
-                if title is None or content is None:
-                    continue
-                cached = (note.updated_at, title, content)
-                self._locked_decrypt_cache[note.id] = cached
+                if (note.id, note.updated_at) not in self._locked_decrypt_failed:
+                    pending = True
+                continue
             _, title, content = cached
             if needle in title.casefold() or needle in content.casefold():
                 matches.append(note)
+        if pending:
+            self._ensure_locked_decrypts(pin)
         return matches
+
+    def _ensure_locked_decrypts(self, pin: str) -> None:
+        """启动一次后台全量补算（已在运行则复用），完成后刷新列表展示匹配结果。"""
+        if self._locked_decrypt_worker is not None and self._locked_decrypt_worker.isRunning():
+            return
+        worker = LockedDecryptWorker(
+            self.store, pin, self._locked_decrypt_cache, self._locked_decrypt_failed, self
+        )
+        worker.finished.connect(self._on_locked_decrypts_done)
+        self._locked_decrypt_worker = worker
+        worker.start()
+
+    def _on_locked_decrypts_done(self) -> None:
+        # 只清理当前这轮的引用：旧 worker 的收尾信号可能晚于新 worker 的启动
+        if self.sender() is self._locked_decrypt_worker:
+            self._locked_decrypt_worker = None
+        self._refresh_cards()
 
     def _sorted(self, notes: list[Note]) -> list[Note]:
         if self._sort_mode == "created":

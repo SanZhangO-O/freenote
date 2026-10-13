@@ -7,9 +7,11 @@ package com.zqr.freenote.ui.common
  * Keeping the rules in one place avoids the duplicated
  * `it.length <= 6 && it.all(Char::isDigit)` guard that was previously
  * inlined in several composables.
+ *
+ * 长度上限与 Windows 版 crypto.PIN_MAX_LENGTH 保持一致（4~12 位数字）。
  */
 object PinValidation {
-    const val MAX_LENGTH = 6
+    const val MAX_LENGTH = 12
     const val MIN_LENGTH = 4
 
     /** True when [input] only contains digits and is within the allowed length. */

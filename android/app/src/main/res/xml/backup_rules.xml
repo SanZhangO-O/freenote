@@ -8,4 +8,6 @@
     <exclude domain="database" path="freenote_database-shm" />
     <!-- 同步凭据（已用 Keystore 加密，换机后密钥不可用）：不随备份迁移 -->
     <exclude domain="sharedpref" path="freenote_sync.xml" />
+    <!-- WebDAV 密码（Keystore 加密的独立文件）：同样不随备份迁移 -->
+    <exclude domain="sharedpref" path="freenote_backup_secrets.xml" />
 </full-backup-content>

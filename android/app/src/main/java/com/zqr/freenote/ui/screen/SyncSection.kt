@@ -41,6 +41,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.zqr.freenote.data.sync.MIN_PASSPHRASE_LENGTH
 import com.zqr.freenote.data.sync.ServerUrl
 import com.zqr.freenote.data.sync.SyncManager
 import com.zqr.freenote.data.sync.SyncPeer
@@ -113,6 +114,11 @@ fun SyncSection(onMessage: (String) -> Unit) {
     fun commitPassphrase() {
         val value = passphraseText.trim()
         if (value != config.passphrase) {
+            if (value.isNotEmpty() && value.length < MIN_PASSPHRASE_LENGTH) {
+                // 太短的口令可被局域网被动监听者离线穷举：拒绝写入设置
+                onMessage("同步口令至少 $MIN_PASSPHRASE_LENGTH 位（建议使用「生成随机口令」）")
+                return
+            }
             SyncSettings.setPassphrase(value)
             SyncManager.onConfigChanged()
         }
@@ -227,6 +233,7 @@ fun SyncSection(onMessage: (String) -> Unit) {
             onValueChange = { passphraseText = it },
             label = { Text("同步口令") },
             placeholder = { Text("同一口令的设备才会互相发现并同步") },
+            supportingText = { Text("至少 $MIN_PASSPHRASE_LENGTH 位；建议使用「生成随机口令」") },
             singleLine = true,
             enabled = p2pReady,
             keyboardOptions = textFieldOptions,

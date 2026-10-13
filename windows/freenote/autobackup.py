@@ -17,6 +17,7 @@ from urllib.parse import quote
 import requests
 
 from . import backup
+from . import config
 from .database import NoteStore
 from .models import now_ms
 from .settings import Settings
@@ -85,6 +86,12 @@ def _upload_webdav(settings: Settings, path: Path) -> str | None:
     url = settings.webdav_url
     if not url:
         return None
+    if "://" not in url:
+        return "WebDAV 地址需要以 https:// 开头（明文 HTTP 已阻止）"
+    if config.is_plaintext_public_url(url):
+        # 备份文件包含便签明文，Basic 认证凭据也会随请求发送；
+        # 非内网的明文 HTTP 一律拒绝，避免整份备份在链路上泄露
+        return "WebDAV 地址是明文 HTTP 且非内网，已阻止上传以防备份与凭据泄露；请改用 https://"
     target = url.rstrip("/") + "/" + quote(path.name)
     try:
         data = path.read_bytes()

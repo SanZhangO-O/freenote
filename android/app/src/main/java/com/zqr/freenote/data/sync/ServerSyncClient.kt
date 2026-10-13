@@ -37,44 +37,114 @@ data class ServerAuthResult(
 )
 
 object ServerUrl {
-    /** 补全协议前缀并去掉尾部斜杠。 */
+    /**
+     * 补全协议前缀并去掉尾部斜杠。
+     * 内网/本机地址默认 http（自建服务器常见形态）；公网域名或 IP 默认 https，
+     * 避免用户漏写协议时凭据与便签在公网上走明文。
+     */
     fun normalize(text: String): String {
         var value = text.trim().trimEnd('/')
         if (value.isBlank()) return ""
-        if (!value.contains("://")) value = "http://$value"
+        if (!value.contains("://")) {
+            val scheme = if (isPrivateHost(hostOf(value))) "http" else "https"
+            value = "$scheme://$value"
+        }
         return value
     }
 
+    /** 从「主机[:端口][/路径]」或完整 URL 中提取主机名（小写，去 IPv6 方括号）。 */
+    fun hostOf(text: String): String {
+        val value = text.trim()
+        if (value.isEmpty()) return ""
+        if (value.contains("://")) {
+            return try {
+                java.net.URI(value).host?.lowercase() ?: ""
+            } catch (e: Exception) {
+                ""
+            }
+        }
+        var authority = value.substringBefore('/').substringAfterLast('@')
+        if (authority.startsWith("[")) {
+            val end = authority.indexOf(']')
+            return if (end > 0) authority.substring(1, end).lowercase() else ""
+        }
+        if (authority.count { it == ':' } == 1) authority = authority.substringBeforeLast(':')
+        return authority.lowercase()
+    }
+
+    /** 本机/内网/链路本地主机名（与 Windows config.is_local_host 判定一致）。 */
+    fun isPrivateHost(host: String): Boolean {
+        val lower = host.trim().lowercase().trim('[', ']')
+        if (lower.isEmpty()) return false
+        if (lower == "localhost" || lower.endsWith(".local")) return true
+        val address = ipLiteralOrNull(lower) ?: return false
+        return address.isLoopbackAddress ||
+            address.isLinkLocalAddress ||
+            address.isSiteLocalAddress ||
+            address.isAnyLocalAddress ||
+            isIpv6UniqueLocal(address) ||
+            isIpv4CarrierGradeNat(address)
+    }
+
+    /** IPv4 运营商级 NAT 100.64.0.0/10（ISP 内网常用，Python is_private 视为私有）。 */
+    private fun isIpv4CarrierGradeNat(address: java.net.InetAddress): Boolean {
+        val bytes = address.address
+        if (bytes.size != 4) return false
+        val first = bytes[0].toInt() and 0xFF
+        val second = bytes[1].toInt() and 0xFF
+        return first == 100 && second in 64..127
+    }
+
     /**
-     * 明文 HTTP 且目标不是本机/内网地址时返回 true（用于提示改用 HTTPS）。
-     * 内网 IPv4（10/172.16-31/192.168/169.254）、IPv6 链路本地/唯一本地地址不提示。
+     * 仅当字符串是 IP 字面量时返回解析结果，绝不触发 DNS。
+     * 只有严格合法的 IPv4（拒绝前导零，与 Python ipaddress 一致）或以 ':' 开头的
+     * IPv6 字面量才会交给 InetAddress，普通域名一律返回 null。
+     */
+    private fun ipLiteralOrNull(host: String): java.net.InetAddress? {
+        if (host.count { it == ':' } >= 2) {
+            return try {
+                java.net.InetAddress.getByName(host)
+            } catch (e: Exception) {
+                null
+            }
+        }
+        val parts = host.split('.')
+        if (parts.size != 4) return null
+        val bytes = ByteArray(4)
+        for ((index, part) in parts.withIndex()) {
+            if (part.isEmpty() || part.length > 3 || part.any { it !in '0'..'9' }) return null
+            if (part.length > 1 && part[0] == '0') return null  // 前导零：与 Python ipaddress 一致判非法
+            val value = part.toInt()
+            if (value > 255) return null
+            bytes[index] = value.toByte()
+        }
+        return try {
+            java.net.InetAddress.getByAddress(bytes)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** IPv6 唯一本地地址 fc00::/7（InetAddress 没有对应判定，Java 的 ULA 段）。 */
+    private fun isIpv6UniqueLocal(address: java.net.InetAddress): Boolean {
+        val bytes = address.address
+        return bytes.size == 16 && (bytes[0].toInt() and 0xFE) == 0xFC
+    }
+
+    /**
+     * 明文 HTTP 且目标不是本机/内网地址时返回 true
+     * （用于提示改用 HTTPS / 阻断 WebDAV 明文上传）。
      */
     fun needsHttpsHint(url: String): Boolean {
         val value = normalize(url)
         if (!value.startsWith("http://", ignoreCase = true)) return false
-        val host = try {
-            java.net.URI(value).host ?: return false
-        } catch (e: Exception) {
-            return false
-        }
-        val lower = host.lowercase().trim('[', ']')
-        if (lower == "localhost" || lower == "127.0.0.1" || lower == "::1" || lower.endsWith(".local")) {
-            return false
-        }
-        if (Regex("^\\d{1,3}(\\.\\d{1,3}){3}$").matches(lower)) {
-            val parts = lower.split('.').mapNotNull { it.toIntOrNull() }
-            if (parts.size == 4) {
-                val (a, b) = parts
-                if (a == 10 || (a == 192 && b == 168) || (a == 172 && b in 16..31)) return false
-                if (a == 169 && b == 254) return false
-            }
-            return true
-        }
-        if (lower.startsWith("fe80:") || lower.startsWith("fc") || lower.startsWith("fd")) {
-            return false
-        }
-        return true // 域名：视为公网
+        val host = hostOf(value)
+        if (host.isEmpty()) return false
+        return !isPrivateHost(host)
     }
+
+    /** 明文 HTTP 且目标非本机/内网：WebDAV 上传前据此阻断。 */
+    fun isPlaintextPublic(url: String): Boolean = needsHttpsHint(url)
 }
 
 /**

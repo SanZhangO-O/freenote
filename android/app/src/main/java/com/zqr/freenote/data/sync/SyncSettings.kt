@@ -83,6 +83,9 @@ data class SyncConfig(
 
 const val DEFAULT_SYNC_PORT = 8765
 
+/** 同步口令最小长度：发现广播 tag 可被离线穷举口令，太短的口令不安全。 */
+const val MIN_PASSPHRASE_LENGTH = 8
+
 /**
  * 同步设置（SharedPreferences，独立于界面设置）。
  * 与 FreeNote 的 settings.json 对应：P2P 口令/设备名/端口/发现开关 + 服务器账号。
@@ -131,6 +134,13 @@ object SyncSettings {
             deviceName = defaultDeviceName()
             prefs.edit { putString(KEY_DEVICE_NAME, deviceName) }
         }
+        var serverUrl = prefs.getString(KEY_SERVER_URL, "") ?: ""
+        if (serverUrl.isNotBlank() && !serverUrl.contains("://")) {
+            // 升级迁移：存量无协议前缀的地址按旧语义固定为 http，
+            // 否则新的「公网默认 https」会把存量明文部署静默切到 https 导致同步中断
+            serverUrl = "http://" + serverUrl.trim().trimEnd('/')
+            prefs.edit { putString(KEY_SERVER_URL, serverUrl) }
+        }
         _config.value = SyncConfig(
             deviceId = deviceId,
             deviceName = deviceName,
@@ -141,7 +151,7 @@ object SyncSettings {
             p2pAutoSync = prefs.getBoolean(KEY_P2P_AUTO, false),
             syncPort = prefs.getInt(KEY_SYNC_PORT, DEFAULT_SYNC_PORT),
             syncIntervalMin = maxOf(1, prefs.getInt(KEY_INTERVAL, 5)),
-            serverUrl = prefs.getString(KEY_SERVER_URL, "") ?: "",
+            serverUrl = serverUrl,
             username = prefs.getString(KEY_USERNAME, "") ?: "",
             token = SecretStore.decrypt(prefs.getString(KEY_TOKEN, "") ?: ""),
             serverAutoSync = prefs.getBoolean(KEY_SERVER_AUTO, false),

@@ -29,9 +29,13 @@ python run.py --port 9000     # 自定义端口
 | POST | `/api/change_password` | 修改密码 `{oldPassword, newPassword}`；成功后撤销其他设备令牌 |
 | POST | `/api/delete_account` | 注销账号 `{password}`：删除该用户在服务端的全部便签、图片与令牌 |
 | POST | `/api/sync` | 推送本地变更并拉取增量（核心接口，含附件上传/下载） |
-| GET | `/admin?token=…` | 只读管理面板（需设置环境变量 `FREENOTE_ADMIN_TOKEN` 后访问） |
+| GET | `/admin` | 只读管理面板（需设置环境变量 `FREENOTE_ADMIN_TOKEN` 后用 Bearer 头访问） |
 
 密码相关的接口有滑动窗口限流（每 IP+用户名 5 分钟最多 10 次尝试，超出返回 429）。
+限流键默认使用 TCP 对端地址；部署在反向代理后面时，设置环境变量
+`FREENOTE_TRUSTED_PROXIES`（逗号分隔的可信代理 IP/CIDR，如 `127.0.0.1,::1`）
+才会采信 `X-Forwarded-For`（取最右侧值）/`X-Real-IP`，未设置时一律忽略这些头，
+防止客户端伪造 IP 绕过限流。
 
 `POST /api/sync` 请求体：
 
@@ -58,11 +62,13 @@ python run.py --port 9000     # 自定义端口
 
 ## 管理面板
 
-设置环境变量并重启后，可用 `GET /admin?token=<管理令牌>`（或 `Authorization: Bearer <管理令牌>`）打开只读面板，
-查看每个用户的注册时间、令牌数、便签数量与附件占用：
+设置环境变量并重启后，用 `Authorization: Bearer <管理令牌>` 访问 `GET /admin`
+打开只读面板，查看每个用户的注册时间、令牌数、便签数量与附件占用
+（不支持 `?token=` 查询串：查询串会进入代理日志与浏览器历史）：
 
 ```bash
 FREENOTE_ADMIN_TOKEN=请改成长随机串 python run.py
+curl -H "Authorization: Bearer 请改成长随机串" http://127.0.0.1:8000/admin
 ```
 
 未设置该环境变量时 `/admin` 返回 404（默认不启用）。
@@ -94,8 +100,12 @@ location / {
     proxy_pass http://127.0.0.1:8000;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 }
 ```
+
+经反向代理部署时，同时设置 `FREENOTE_TRUSTED_PROXIES=127.0.0.1,::1`（按实际代理地址调整），
+否则限流会按代理地址聚合而非真实客户端 IP。
 
 ### 原生 HTTPS（无反向代理时）
 
@@ -122,6 +132,7 @@ Android 端在同步设置打开「允许自签名证书」。传输全程加密
   旧版本签发的无过期时间令牌保持有效，直到用户下次登录换取新令牌；
 - 登录/注册/改密/注销接口有进程内滑动窗口限流（每 IP+用户名 5 分钟 10 次），
   单实例部署足够；多实例部署时需在反向代理层另行限流；
+  限流键只在 `FREENOTE_TRUSTED_PROXIES` 覆盖的来源上采信转发头（防止伪造 IP 绕过）；
 - 附件（图片）与普通便签一样以明文存储，且不解析内容；
   单用户配额 512 MB，按内容寻址天然去重；
 - 建议仅通过 HTTPS 暴露；锁定便签由客户端加密，服务端只能看到密文；

@@ -14,8 +14,10 @@ P2P 相关设置：
 - server_url / server_username / server_token：服务端地址与登录令牌；
 - server_auto_sync：服务器自动同步开关（间隔与 P2P 共用 sync_interval_min）。
 
-凭据静态保护：同步口令与服务器令牌不落盘明文，Windows 上用 DPAPI
-（按当前 Windows 用户加密，复制到其他机器/用户下无法解密，读取时按空处理）。
+凭据静态保护：同步口令、服务器令牌、WebDAV 密码与 PIN 哈希不落盘明文，Windows 上用
+DPAPI（按当前 Windows 用户加密，复制到其他机器/用户下无法解密，读取时按空处理）。
+DPAPI 在 Windows 上失败时回写该键上一次的磁盘密文（绝不落盘明文，也不会把
+pin_hash/令牌静默擦成空值），并打印一次警告；仅非 Windows 开发/测试环境允许明文回退。
 
 网络默认关闭：P2P 总开关/发现/自动同步/服务器自动同步默认均为关，且未开启
 P2P 总开关或未配置同步口令前不监听任何端口、不发送组播——所有联网能力都
@@ -27,6 +29,7 @@ from __future__ import annotations
 import base64
 import ctypes
 import json
+import logging
 import os
 import socket
 import sys
@@ -40,8 +43,18 @@ THEME_SYSTEM = "system"
 THEME_LIGHT = "light"
 THEME_DARK = "dark"
 
-_PROTECTED_KEYS = ("group_passphrase", "server_token", "webdav_password")
+_PROTECTED_KEYS = ("group_passphrase", "server_token", "webdav_password", "pin_hash")
 _PROTECTED_PREFIX = "dpapi:"
+
+_log = logging.getLogger("freenote.settings")
+_warned_once: set[str] = set()
+
+
+def _warn_once(message: str) -> None:
+    if message in _warned_once:
+        return
+    _warned_once.add(message)
+    _log.warning(message)
 
 
 class _DataBlob(ctypes.Structure):
@@ -96,11 +109,19 @@ def _dpapi(data: bytes, protect: bool) -> bytes | None:
         return None
 
 
-def protect_secret(value: str) -> str:
-    if not value or value.startswith(_PROTECTED_PREFIX):
+def _protect_for_disk(value: str) -> str | None:
+    """把明文凭据转换成落盘形式。
+
+    Windows 上必须经 DPAPI 加密，失败返回 None（调用方不得落盘明文）；
+    非 Windows（开发/测试）返回原值并警告一次。
+    """
+    if not value:
         return value
     encrypted = _dpapi(value.encode("utf-8"), protect=True)
     if encrypted is None:
+        if sys.platform == "win32":
+            return None
+        _warn_once("非 Windows 平台：同步凭据将以明文保存（仅限开发/测试）")
         return value
     return _PROTECTED_PREFIX + base64.b64encode(encrypted).decode("ascii")
 
@@ -179,6 +200,8 @@ class Settings:
         self._values = dict(_DEFAULTS)
         # 无法解密（换机器/换用户）但需要原样保留的凭据密文
         self._sealed_secrets: dict[str, str] = {}
+        # 每个凭据在磁盘上的最近一次落盘值：DPAPI 临时失败时回写它而不是明文/空值
+        self._disk_raw: dict[str, str] = {}
         self.load()
         if not self.get("device_id"):
             self._values["device_id"] = str(uuid.uuid4())
@@ -197,10 +220,16 @@ class Settings:
             for key, default in _DEFAULTS.items():
                 if key in data and _value_type_ok(data[key], default):
                     self._values[key] = data[key]
+            # 升级迁移：旧版本服务器地址不带协议前缀时按旧语义（http）固定下来，
+            # 否则新版的「公网默认 https」会把存量明文部署静默切到 https 导致同步中断
+            server_url = self._values.get("server_url")
+            if isinstance(server_url, str) and server_url and "://" not in server_url:
+                self._values["server_url"] = "http://" + server_url.strip().rstrip("/")
             for key in _PROTECTED_KEYS:
                 raw = self._values.get(key)
                 if not isinstance(raw, str) or not raw:
                     continue
+                self._disk_raw[key] = raw
                 ok, plain = try_unprotect_secret(raw)
                 if ok:
                     self._values[key] = plain
@@ -212,15 +241,29 @@ class Settings:
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        # 凭据（同步口令 / 服务器令牌）落盘前用 DPAPI 保护
+        # 凭据（同步口令 / 服务器令牌 / WebDAV 密码 / PIN 哈希）落盘前用 DPAPI 保护。
+        # Windows 上加密失败时绝不落盘明文：回写上一次的密文（没有则留空），
+        # 内存值保持可用，避免把 pin_hash/令牌静默擦成空值。
         data = dict(self._values)
         for key in _PROTECTED_KEYS:
             value = data.get(key)
             if isinstance(value, str) and value:
-                data[key] = protect_secret(value)
+                if value.startswith(_PROTECTED_PREFIX):
+                    self._disk_raw[key] = value
+                    continue  # 已是密文（sealed 原样写回等情况）
+                protected = _protect_for_disk(value)
+                if protected is None:
+                    _warn_once(f"DPAPI 不可用：{key} 沿用上一次的磁盘密文（若从未成功保存过则为空）")
+                    data[key] = self._disk_raw.get(key, "")
+                else:
+                    self._disk_raw[key] = protected
+                    data[key] = protected
             elif key in self._sealed_secrets:
                 # 解不开的旧密文按原样写回（用户重设后会清除该备份）
                 data[key] = self._sealed_secrets[key]
+                self._disk_raw[key] = self._sealed_secrets[key]
+            else:
+                self._disk_raw.pop(key, None)
         text = json.dumps(data, ensure_ascii=False, indent=2)
         fd, tmp = tempfile.mkstemp(dir=str(self.path.parent), suffix=".tmp")
         try:

@@ -3,6 +3,7 @@ package com.zqr.freenote.data
 import android.content.Context
 import android.net.Uri
 import androidx.room.withTransaction
+import com.zqr.freenote.data.sync.ServerUrl
 import com.zqr.freenote.data.sync.SyncProtocol
 import com.zqr.freenote.data.sync.SyncStore
 import java.util.UUID
@@ -144,6 +145,14 @@ object BackupManager {
     private fun uploadWebdav(name: String, data: ByteArray): String? {
         val base = SettingsManager.webdavUrl()
         if (base.isBlank()) return null
+        if (!base.contains("://")) {
+            return "WebDAV 地址需要以 https:// 开头（明文 HTTP 已阻止）"
+        }
+        if (ServerUrl.isPlaintextPublic(base)) {
+            // 备份文件包含便签明文，Basic 认证凭据也会随请求发送；
+            // 非内网的明文 HTTP 一律拒绝，避免整份备份在链路上泄露
+            return "WebDAV 地址是明文 HTTP 且非内网，已阻止上传以防备份与凭据泄露；请改用 https://"
+        }
         val target = base.trimEnd('/') + "/" +
             java.net.URLEncoder.encode(name, "UTF-8").replace("+", "%20")
         return try {

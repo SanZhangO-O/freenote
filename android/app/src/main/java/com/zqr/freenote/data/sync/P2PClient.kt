@@ -56,6 +56,19 @@ class P2PClient(
         const val EXCHANGE_PATH = "/api/freenote/exchange"
         const val IMAGE_GET_PATH = "/api/freenote/image_get"
         const val IMAGE_PUT_PATH = "/api/freenote/image_put"
+
+        /**
+         * 已见过的响应随机数：同一有效响应被重放（例如旧「已是最新」）时直接拒绝。
+         * 进程级共享（companion），跨 P2PClient 实例也生效。
+         */
+        private val responseNonces = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+        private fun acceptResponseNonce(nonce: String, now: Long): Boolean {
+            if (responseNonces.size > 4096) {
+                responseNonces.entries.removeIf { it.value <= now }
+            }
+            return responseNonces.putIfAbsent(nonce, now + SyncProtocol.AUTH_CLOCK_SKEW_MS) == null
+        }
     }
 
     private fun key(): ByteArray =
@@ -155,8 +168,12 @@ class P2PClient(
             throw P2PProtocolException("对端响应签名校验失败")
         }
         // 拒绝重放旧响应（例如把过去的「已是最新」重新放给客户端）
-        if (abs(System.currentTimeMillis() - timestamp) > SyncProtocol.AUTH_CLOCK_SKEW_MS) {
+        val now = System.currentTimeMillis()
+        if (abs(now - timestamp) > SyncProtocol.AUTH_CLOCK_SKEW_MS) {
             throw P2PProtocolException("对端响应时间戳无效")
+        }
+        if (!acceptResponseNonce(nonce, now)) {
+            throw P2PProtocolException("对端响应重复（疑似重放），已拒绝")
         }
     }
 

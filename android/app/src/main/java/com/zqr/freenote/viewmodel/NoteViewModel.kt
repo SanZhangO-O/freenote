@@ -248,8 +248,9 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
     private val lockedSearchCache = HashMap<String, Pair<Long, String>>()
 
     /** 锁定便签的解锁态搜索；PIN 会话过期后不参与搜索（密文内容不泄漏）。 */
-    private suspend fun lockedSearchMatches(query: String): List<Note> {
-        val pin = getUnlockPin() ?: return emptyList()
+    private suspend fun lockedSearchMatches(query: String): List<Note> = withContext(Dispatchers.Default) {
+        // v2 密文每条 600000 次 PBKDF2，搜索流在 Main 上收集：必须切后台，避免卡 UI/ANR
+        val pin = getUnlockPin() ?: return@withContext emptyList()
         val needle = query.lowercase()
         val matches = mutableListOf<Note>()
         repository.getLockedNotes().forEach { note ->
@@ -264,7 +265,7 @@ class NoteViewModel(application: Application) : AndroidViewModel(application) {
             }
             if (needle in haystack) matches.add(note)
         }
-        return matches
+        matches
     }
 
     private val baseList = combine(

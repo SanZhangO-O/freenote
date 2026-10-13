@@ -3,6 +3,7 @@ package com.zqr.freenote.data
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.core.content.edit
+import com.zqr.freenote.data.sync.SecretStore
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
@@ -22,6 +23,8 @@ data class AppSettings(
 
 object SettingsManager {
     private const val PREFS_NAME = "freenote_settings"
+    // WebDAV 密码单独存放（Keystore 加密 + 从备份/换机迁移中排除）
+    private const val SECRETS_PREFS_NAME = "freenote_backup_secrets"
     private const val KEY_THEME = "theme_mode"
     private const val KEY_DYNAMIC = "dynamic_color"
     private const val KEY_PIN = "pin_hash"
@@ -30,12 +33,15 @@ object SettingsManager {
     private const val KEY_LAST_AUTO_BACKUP = "last_auto_backup_at"
     private const val KEY_WEBDAV_URL = "webdav_url"
     private const val KEY_WEBDAV_USER = "webdav_user"
-    private const val KEY_WEBDAV_PASSWORD = "webdav_password"
+    // 旧版本此键存明文密码（仅用于迁移）；新值加密后存入 SECRETS_PREFS_NAME
+    private const val KEY_WEBDAV_PASSWORD_LEGACY = "webdav_password"
+    private const val KEY_WEBDAV_PASSWORD_SECRET = "webdav_password"
 
-    private const val PIN_ITERATIONS = 60_000
+    private const val PIN_ITERATIONS = 600_000
     private const val PIN_SALT_BYTES = 16
 
     private lateinit var prefs: SharedPreferences
+    private lateinit var secretsPrefs: SharedPreferences
     private var initialized = false
 
     private val _settings = MutableStateFlow(AppSettings())
@@ -43,9 +49,27 @@ object SettingsManager {
 
     fun init(context: Context) {
         if (initialized) return
-        prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val appContext = context.applicationContext
+        prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        secretsPrefs = appContext.getSharedPreferences(SECRETS_PREFS_NAME, Context.MODE_PRIVATE)
+        migrateWebdavPassword()
         load()
         initialized = true
+    }
+
+    /** 旧版本把 WebDAV 密码明文存在 freenote_settings.xml：迁移为 Keystore 密文并删除明文。 */
+    private fun migrateWebdavPassword() {
+        val legacy = prefs.getString(KEY_WEBDAV_PASSWORD_LEGACY, null) ?: return
+        if (legacy.isEmpty()) {
+            prefs.edit { remove(KEY_WEBDAV_PASSWORD_LEGACY) }
+            return
+        }
+        val encrypted = SecretStore.encrypt(legacy)
+        if (encrypted.isNotEmpty()) {
+            secretsPrefs.edit { putString(KEY_WEBDAV_PASSWORD_SECRET, encrypted) }
+            prefs.edit { remove(KEY_WEBDAV_PASSWORD_LEGACY) }
+        }
+        // 加密不可用（Keystore 异常）时保留明文项，下次启动重试，绝不静默丢密码
     }
 
     // ------------------------------------------------------------------ 自动备份 / WebDAV
@@ -75,10 +99,11 @@ object SettingsManager {
     fun setWebdavUser(value: String) =
         prefs.edit().putString(KEY_WEBDAV_USER, value.trim()).apply()
 
-    fun webdavPassword(): String = prefs.getString(KEY_WEBDAV_PASSWORD, "") ?: ""
+    fun webdavPassword(): String =
+        SecretStore.decrypt(secretsPrefs.getString(KEY_WEBDAV_PASSWORD_SECRET, "") ?: "")
 
     fun setWebdavPassword(value: String) =
-        prefs.edit().putString(KEY_WEBDAV_PASSWORD, value).apply()
+        secretsPrefs.edit { putString(KEY_WEBDAV_PASSWORD_SECRET, SecretStore.encrypt(value)) }
 
     private fun load() {
         val mode = when (prefs.getString(KEY_THEME, "SYSTEM")) {
@@ -129,8 +154,9 @@ object SettingsManager {
     fun hasPin(): Boolean = _settings.value.pinHash != null
 
     /**
-     * 随机盐 + PBKDF2 派生 PIN 哈希，避免固定盐 + 单次 SHA-256 可被离线批量爆破。
-     * 存储格式："迭代次数:盐(Base64):派生密钥(Base64)"。
+     * 随机盐 + PBKDF2 派生 PIN 哈希（600000 次，与 Windows 版一致），
+     * 避免低迭代 + 固定盐可被离线批量爆破。
+     * 存储格式："迭代次数:盐(Base64):派生密钥(Base64)"（旧哈希按其中记录的迭代数校验）。
      */
     private fun hashPin(pin: String): String {
         val salt = ByteArray(PIN_SALT_BYTES).also(SecureRandom()::nextBytes)

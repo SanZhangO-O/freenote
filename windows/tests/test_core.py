@@ -38,7 +38,7 @@ from freenote.models import (  # noqa: E402
     strip_image_tokens,
     tombstone_note,
 )
-from freenote.settings import Settings, protect_secret, try_unprotect_secret  # noqa: E402
+from freenote.settings import Settings, _protect_for_disk, try_unprotect_secret  # noqa: E402
 
 
 class CryptoTest(unittest.TestCase):
@@ -60,14 +60,34 @@ class CryptoTest(unittest.TestCase):
         self.assertEqual(crypto.decrypt(crypto.encrypt(long_text, "5678"), "5678"), long_text)
         # PIN 哈希与可提交校验
         stored = crypto.hash_pin("1234")
-        self.assertTrue(stored.startswith("60000:"))
+        self.assertTrue(stored.startswith("600000:"))
         self.assertTrue(crypto.verify_pin("1234", stored))
         self.assertFalse(crypto.verify_pin("1235", stored))
         self.assertFalse(crypto.verify_pin("1234", None))
         self.assertTrue(crypto.is_complete_pin("1234"))
-        self.assertTrue(crypto.is_complete_pin("123456"))
+        self.assertTrue(crypto.is_complete_pin("123456789012"))
         self.assertFalse(crypto.is_complete_pin("123"))
+        self.assertFalse(crypto.is_complete_pin("1234567890123"))
         self.assertFalse(crypto.is_complete_pin("12a4"))
+
+    def test_note_crypto_v2_format_and_legacy_vector(self) -> None:
+        # v2：密文自带版本、迭代数与随机盐（同明文两次加密不同）
+        cipher = crypto.encrypt("v2 格式内容", "1234")
+        self.assertTrue(cipher.startswith("v2:600000:"))
+        self.assertNotEqual(cipher, crypto.encrypt("v2 格式内容", "1234"))
+        # 跨端固定向量（由旧版参数生成的 v1 密文与新版 v2 密文，Android CryptoUtils 同参数）
+        legacy_vector = (
+            "AAECAwQFBgcICQoLtIH1Ta4QTHljJ3yYMc36WjNOoJq8fvKK8lCJ4Z7G9MXlU74ZHg=="
+        )
+        self.assertEqual(crypto.decrypt(legacy_vector, "1234"), "旧格式密文内容")
+        v2_vector = (
+            "v2:600000:AAECAwQFBgcICQoLDA0ODwABAgMEBQYHCAkKC7id7RckXYRzVC35nH5MJSCG"
+            "WQpI8FvASnq8P/HAAwvZUB2f53Sq"
+        )
+        self.assertEqual(crypto.decrypt(v2_vector, "1234"), "跨端向量 v2 内容")
+        # 畸形 v2：非法迭代数/不可解码载荷一律拒绝，不因巨量迭代数空转 CPU
+        self.assertIsNone(crypto.decrypt("v2:999999999999:" + "A" * 64, "1234"))
+        self.assertIsNone(crypto.decrypt("v2:600000:@@@", "1234"))
 
 
 class ChecklistTest(unittest.TestCase):
@@ -313,25 +333,33 @@ class SettingsSecretTest(unittest.TestCase):
     """同步凭据不应明文落盘（Windows 上经 DPAPI 保护），且换机解不开时不得抹掉密文。"""
 
     def test_secret_protection_and_persistence(self) -> None:
-        protected = protect_secret("MY-SECRET-CODE")
+        protected = _protect_for_disk("MY-SECRET-CODE")  # 生产路径：save() 用它落盘
+        if protected is None:  # Windows 上 DPAPI 不可用时不得回退明文
+            self.fail("win32 上 DPAPI 应可用；不可用时 save() 会沿用旧密文而非明文")
         if protected != "MY-SECRET-CODE":  # DPAPI 可用（Windows）
             self.assertTrue(protected.startswith("dpapi:"))
             self.assertEqual(try_unprotect_secret(protected), (True, "MY-SECRET-CODE"))
         self.assertEqual(try_unprotect_secret("plain-value"), (True, "plain-value"))
-        self.assertEqual(protect_secret(""), "")
+        self.assertEqual(_protect_for_disk(""), "")
 
-        # 设置文件中的口令与令牌不落明文，但可正常回读
+        # 设置文件中的口令、令牌、WebDAV 密码与 PIN 哈希不落明文，但可正常回读
         path = Path(_TMP.name) / "secret_settings.json"
         settings = Settings(path)
         settings.group_passphrase = "P2P-SECRET-1234"
         settings.server_token = "bearer-secret-token"
+        settings.webdav_password = "dav-secret-password"
+        settings.pin_hash = crypto.hash_pin("1234")
         if sys.platform == "win32":
             raw = path.read_text(encoding="utf-8")
             self.assertNotIn("P2P-SECRET-1234", raw)
             self.assertNotIn("bearer-secret-token", raw)
+            self.assertNotIn("dav-secret-password", raw)
+            self.assertNotIn(settings.pin_hash or "", raw)
         reloaded = Settings(path)
         self.assertEqual(reloaded.group_passphrase, "P2P-SECRET-1234")
         self.assertEqual(reloaded.server_token, "bearer-secret-token")
+        self.assertEqual(reloaded.webdav_password, "dav-secret-password")
+        self.assertEqual(reloaded.pin_hash, settings.pin_hash)
 
         # 解不开的旧密文：内存按空处理，保存时原样保留；用户重设后覆盖
         sealed = "dpapi:" + base64.b64encode(b"not-a-real-dpapi-blob").decode("ascii")
@@ -349,6 +377,19 @@ class SettingsSecretTest(unittest.TestCase):
             json.loads(path.read_text(encoding="utf-8"))["group_passphrase"], sealed
         )
         self.assertEqual(Settings(path).group_passphrase, "NEW-CODE")
+
+    def test_scheme_less_server_url_migrates_to_legacy_http(self) -> None:
+        # 升级迁移：存量无协议前缀的服务器地址按旧语义固定为 http，避免被静默切到 https
+        path = Path(_TMP.name) / "url_settings.json"
+        path.write_text(
+            json.dumps({"server_url": "sync.example.com:8000"}), encoding="utf-8"
+        )
+        settings = Settings(path)
+        self.assertEqual(settings.server_url, "http://sync.example.com:8000")
+        self.assertEqual(
+            json.loads(path.read_text(encoding="utf-8"))["server_url"],
+            "http://sync.example.com:8000",
+        )
 
 
 class BackupTest(unittest.TestCase):
@@ -406,6 +447,7 @@ class SyncClientHelpersTest(unittest.TestCase):
         from freenote.sync_client import _needs_https_hint, normalize_server_url
 
         self.assertEqual(normalize_server_url("192.168.1.8:8000"), "http://192.168.1.8:8000")
+        self.assertEqual(normalize_server_url("example.com:8000"), "https://example.com:8000")
         self.assertEqual(normalize_server_url("http://a.b/c/"), "http://a.b/c")
         self.assertEqual(normalize_server_url(""), "")
 

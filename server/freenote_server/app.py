@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import base64
 import html
+import ipaddress
+import logging
 import os
 import secrets
 import threading
@@ -35,6 +37,7 @@ from .storage import (
 
 _DB_ENV = "FREENOTE_SERVER_DB"
 _ADMIN_ENV = "FREENOTE_ADMIN_TOKEN"
+_TRUSTED_PROXIES_ENV = "FREENOTE_TRUSTED_PROXIES"
 _DEFAULT_DB = Path(__file__).resolve().parent.parent / "data" / "freenote.db"
 _MAX_BODY_BYTES = 32 * 1024 * 1024
 _MAX_SYNC_NOTES = 5000
@@ -47,6 +50,14 @@ app = FastAPI(
     version=__version__,
     description="FreeNote 笔记同步服务：多设备增量同步，服务端不解析加密便签内容。",
 )
+
+if not os.environ.get(_TRUSTED_PROXIES_ENV, "").strip():
+    # 经 uvicorn 日志输出（默认 INFO 可见）：未配置时一律以 TCP 对端做限流键，
+    # 反向代理部署若不设置该变量，所有客户端会共享同一个限流桶
+    logging.getLogger("uvicorn.error").info(
+        "FREENOTE_TRUSTED_PROXIES 未设置：忽略 X-Forwarded-For/X-Real-IP，限流按 TCP 对端地址。"
+        "若本服务部署在反向代理之后，请设置该变量（如 127.0.0.1,::1），否则所有客户端会共享同一限流键。"
+    )
 
 
 @app.middleware("http")
@@ -105,11 +116,44 @@ class _RateLimiter:
 _rate_limiter = _RateLimiter()
 
 
+def _trusted_proxies() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+    """从 FREENOTE_TRUSTED_PROXIES 解析可信反向代理网段（逗号分隔 IP/CIDR）。
+
+    只有请求确实来自这些代理时，才信任 X-Forwarded-For / X-Real-IP；
+    否则一律使用 TCP 对端地址，避免客户端自行伪造头绕过限流。
+    """
+    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    for part in os.environ.get(_TRUSTED_PROXIES_ENV, "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(part, strict=False))
+        except ValueError:
+            continue
+    return networks
+
+
 def _client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for", "")
-    if forwarded:
-        return forwarded.split(",", 1)[0].strip()
-    return request.client.host if request.client else "?"
+    peer = request.client.host if request.client else "?"
+    networks = _trusted_proxies()
+    if networks:
+        try:
+            peer_ip = ipaddress.ip_address(peer)
+        except ValueError:
+            peer_ip = None
+        if peer_ip is not None and any(peer_ip in network for network in networks):
+            forwarded = request.headers.get("x-forwarded-for", "")
+            if forwarded:
+                # 取最右侧（由最近一跳可信代理写入）的值；
+                # 左侧部分可能被客户端伪造，不能用于限流键。
+                candidate = forwarded.split(",")[-1].strip()
+                if candidate:
+                    return candidate
+            real_ip = request.headers.get("x-real-ip", "").strip()
+            if real_ip:
+                return real_ip
+    return peer
 
 
 def _enforce_rate_limit(action: str, request: Request, username: str = "") -> None:
@@ -245,15 +289,18 @@ def delete_account(
 
 
 @app.get("/admin", response_class=HTMLResponse)
-def admin_panel(request: Request, token: str = "") -> HTMLResponse:
-    """只读管理面板：设置环境变量 FREENOTE_ADMIN_TOKEN 后经 ?token= 或 Bearer 访问。"""
+def admin_panel(request: Request) -> HTMLResponse:
+    """只读管理面板：设置环境变量 FREENOTE_ADMIN_TOKEN 后经 Authorization: Bearer 访问。
+
+    不接收 ?token= 查询串：查询串会进入反向代理/浏览器历史与日志。
+    """
     admin_token = os.environ.get(_ADMIN_ENV, "").strip()
     if not admin_token:
         raise HTTPException(
             status_code=404,
             detail="未启用管理面板：请设置环境变量 FREENOTE_ADMIN_TOKEN 后重启服务",
         )
-    supplied = token or _bearer_token(request.headers.get("authorization"))
+    supplied = _bearer_token(request.headers.get("authorization"))
     if not supplied or not secrets.compare_digest(
         supplied.encode("utf-8"), admin_token.encode("utf-8")
     ):

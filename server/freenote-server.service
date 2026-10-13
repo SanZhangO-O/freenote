@@ -7,6 +7,8 @@ Type=simple
 WorkingDirectory=/opt/freenote-server
 ExecStart=/opt/freenote-server/.venv/bin/uvicorn freenote_server.app:app --host 127.0.0.1 --port 8000
 Environment=FREENOTE_SERVER_DB=/opt/freenote-server/data/freenote.db
+# 反向代理部署时启用（按实际代理地址调整）：仅这些来源的 X-Forwarded-For 才被限流采信
+# Environment=FREENOTE_TRUSTED_PROXIES=127.0.0.1,::1
 Restart=always
 RestartSec=3
 # 可选：使用低权限用户运行
